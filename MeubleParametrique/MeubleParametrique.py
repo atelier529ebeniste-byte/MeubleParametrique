@@ -2252,12 +2252,18 @@ def _find_drive_update_folder():
     return None
 
 
-def _check_and_apply_updates():
+GITHUB_RAW_BASE = (
+    'https://raw.githubusercontent.com/atelier529ebeniste-byte/'
+    'MeubleParametrique/main/MeubleParametrique/')
+GITHUB_ETAG_MARKER = os.path.join(SCRIPT_DIR, '.github_sync_state.json')
+
+
+def _check_and_apply_updates_drive():
     """Compare la date de modification de chaque fichier source entre
     le dossier Drive et le dossier de l'add-in ; copie les versions
     plus recentes trouvees sur le Drive. Renvoie la liste des noms de
-    fichiers effectivement mis a jour (vide si rien a faire, ou si le
-    Drive n'est pas accessible)."""
+    fichiers effectivement mis a jour (liste vide si rien a faire, ou
+    si aucun dossier Drive synchronise n'est trouve localement)."""
     import shutil
     updated = []
     drive_folder = _find_drive_update_folder()
@@ -2276,6 +2282,61 @@ def _check_and_apply_updates():
         except Exception:
             pass
     return updated
+
+
+def _check_and_apply_updates_github():
+    """Repli utilise quand aucun dossier Google Drive synchronise
+    n'est trouve localement (ex. machine sans Google Drive Desktop) :
+    telecharge chaque fichier source depuis le depot GitHub public et
+    compare son ETag (empreinte de version HTTP) au dernier ETag deja
+    synchronise pour ce fichier (fichier marqueur local JSON) -- ne
+    remplace QUE si l'ETag a change depuis la derniere synchro, pour
+    eviter de re-ecrire inutilement a chaque demarrage. Renvoie la
+    liste des fichiers mis a jour (vide si rien a faire ou si pas
+    d'acces internet)."""
+    import urllib.request
+    import json
+    updated = []
+    etat = {}
+    if os.path.isfile(GITHUB_ETAG_MARKER):
+        try:
+            with open(GITHUB_ETAG_MARKER, 'r', encoding='utf-8') as f:
+                etat = json.load(f)
+        except Exception:
+            etat = {}
+    for fname in UPDATE_FILES:
+        dst = os.path.join(SCRIPT_DIR, fname)
+        try:
+            req = urllib.request.Request(GITHUB_RAW_BASE + fname)
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                etag_distant = resp.headers.get('ETag', '')
+                distant = resp.read()
+            if not distant:
+                continue
+            deja_synchro = etat.get(fname) == etag_distant
+            if not deja_synchro:
+                with open(dst, 'wb') as f:
+                    f.write(distant)
+                etat[fname] = etag_distant
+                updated.append(fname)
+        except Exception:
+            pass
+    if updated:
+        try:
+            with open(GITHUB_ETAG_MARKER, 'w', encoding='utf-8') as f:
+                json.dump(etat, f)
+        except Exception:
+            pass
+    return updated
+
+
+def _check_and_apply_updates():
+    """Point d'entree unique : essaie d'abord un dossier Google Drive
+    synchronise localement (rapide, pas de reseau) ; si aucun n'est
+    trouve, se rabat sur le depot GitHub public via internet."""
+    if _find_drive_update_folder():
+        return _check_and_apply_updates_drive()
+    return _check_and_apply_updates_github()
 
 
 def run(context):
