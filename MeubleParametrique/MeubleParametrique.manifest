@@ -1,0 +1,13 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "addin",
+    "id": "",
+    "author": "",
+    "description": {
+        "": "Génère des meubles paramétriques (caisson, étagères, portes, tiroirs) à partir d'une boîte de dialogue : Largeur / Hauteur / Profondeur / épaisseurs de panneaux, avec régénération possible via la commande Modifier. Les portes créées sont compatibles avec l'add-in Porte Inserta Blum pour le perçage des charnières."
+    },
+    "version": "1.0.0",
+    "runOnStartup": false,
+    "supportedOS": "windows|mac",
+    "editEnabled": true
+}

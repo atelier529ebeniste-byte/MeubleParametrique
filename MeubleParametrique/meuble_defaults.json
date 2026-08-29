@@ -1,0 +1,104 @@
+{
+  "largeur": 500.0,
+  "hauteur": 1800.0,
+  "profondeur": 400.0,
+  "ep_panneau": 19.0,
+  "ep_fond": 8.0,
+  "socle_actif": true,
+  "socle": 0.0,
+  "retrait_plinthe": 5.0,
+  "retrait_etagere": 5.0,
+  "montants_mode": "axe_egal",
+  "nb_montants": 0,
+  "montants": [],
+  "etageres_fixes_colonnes": [
+    {
+      "nb_etageres": 1,
+      "hauteurs": [
+        900.0
+      ]
+    }
+  ],
+  "etageres_fixe_mode": "hauteur_colonne",
+  "percage32_colonnes": [
+    [
+      {
+        "systeme": "64",
+        "masquer_haut": 0,
+        "masquer_bas": 0,
+        "trois_trous": true
+      },
+      {
+        "systeme": "64",
+        "masquer_haut": 0,
+        "masquer_bas": 0,
+        "trois_trous": true
+      }
+    ]
+  ],
+  "percage32_retrait": 37.0,
+  "percage32_marge_bas": 9.5,
+  "etageres_colonnes": [
+    [
+      {
+        "nb_etageres": 2,
+        "mode": "hauteur_colonne"
+      },
+      {
+        "nb_etageres": 2,
+        "mode": "hauteur_colonne"
+      }
+    ]
+  ],
+  "portes_mode": "applique",
+  "portes_montage": "inserta",
+  "portes_montage_embase": "visser",
+  "jeu_porte": 2.0,
+  "ep_porte": 19.0,
+  "charniere_axe_basse": 64.0,
+  "charniere_axe_haute": 64.0,
+  "charniere_nb_inter": 0,
+  "charniere_auto": true,
+  "portes_colonnes": [
+    [
+      {
+        "choix": "gauche",
+        "ouverte": false
+      },
+      {
+        "choix": "gauche",
+        "ouverte": false
+      }
+    ]
+  ],
+  "tiroirs_mode": "applique",
+  "jeu_tiroir": 2.0,
+  "ep_face_tiroir": 19.0,
+  "retrait_percage_coulisse": 0.0,
+  "tiroirs_montage_coulisse": "visser",
+  "tiroirs_colonnes": [
+    [
+      {
+        "nb_tiroirs": 0,
+        "mode": "hauteur_niche"
+      },
+      {
+        "nb_tiroirs": 0,
+        "mode": "hauteur_niche"
+      }
+    ]
+  ],
+  "prise_main_portes": [
+    [
+      "sans",
+      "sans"
+    ]
+  ],
+  "prise_main_tiroirs": [
+    [
+      [],
+      []
+    ]
+  ],
+  "gap_mm": 100
+}
