@@ -9,7 +9,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.03'
+ADDIN_VERSION = '1.02'
 
 app = None
 ui = None
@@ -2020,6 +2020,13 @@ def add_meuble_fields(inputs, cur_mm_func):
     inputs.addBoolValueInput('buttonAppliquer', 'Appliquer',
                               False, RESOURCE_FOLDER_APPLIQUER, False)
 
+    # Reverifie ici (pas seulement au demarrage de Fusion) pour que
+    # l'ouverture du dialogue detecte une eventuelle publication faite
+    # PENDANT que Fusion tournait deja.
+    try:
+        _check_and_apply_updates()
+    except Exception:
+        pass
     _version_detectee = _extract_version(
         os.path.join(SCRIPT_DIR, 'MeubleParametrique.py')) or 'inconnue'
     inputs.addTextBoxCommandInput(
@@ -2432,12 +2439,24 @@ class CreateCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             design = get_design()
             root = design.rootComponent if design else None
 
+            try:
+                _check_and_apply_updates()
+            except Exception:
+                pass
             _logo_path = os.path.join(SCRIPT_DIR, 'resources', 'logo_atelier_10pct.png')
             if os.path.isfile(_logo_path):
                 inputs.addImageCommandInput('imageLogoAtelier', '', _logo_path)
+            # ADDIN_VERSION = version du code ACTUELLEMENT actif (celui
+            # charge en memoire pour cette session) ; peut differer de
+            # la version sur disque si une MAJ vient d'etre telechargee
+            # mais que l'add-in n'a pas encore ete relance.
+            _version_disque_ici = _extract_version(
+                os.path.join(SCRIPT_DIR, 'MeubleParametrique.py'))
+            _libelle_version = 'Meuble Paramétrique V ' + ADDIN_VERSION
+            if _version_disque_ici and _version_disque_ici != ADDIN_VERSION:
+                _libelle_version += ' (ancienne version, relancez l\'add-in)'
             _txt_version = inputs.addTextBoxCommandInput(
-                'textVersionAddin', '',
-                'Meuble Paramétrique V ' + ADDIN_VERSION, 1, True)
+                'textVersionAddin', '', _libelle_version, 1, True)
 
             dd_meuble = inputs.addDropDownCommandInput(
                 'dropdownMeuble', 'Meuble', adsk.core.DropDownStyles.TextListDropDownStyle)
