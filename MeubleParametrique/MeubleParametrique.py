@@ -9,7 +9,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.01'
+ADDIN_VERSION = '1.02'
 
 app = None
 ui = None
@@ -20,7 +20,6 @@ SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
 RESOURCE_FOLDER_REFRESH = os.path.join(SCRIPT_DIR, 'resources', 'Refresh')
 RESOURCE_FOLDER_SAVE_DEFAULT = os.path.join(SCRIPT_DIR, 'resources', 'EnregistrerDefaut')
 RESOURCE_FOLDER_MEUBLE = os.path.join(SCRIPT_DIR, 'resources', 'MeubleParametrique')
-RESOURCE_FOLDER_MISE_A_JOUR = os.path.join(SCRIPT_DIR, 'resources', 'MiseAJourDisponible')
 RESOURCE_FOLDER_APPLIQUER = os.path.join(SCRIPT_DIR, 'resources', 'Appliquer')
 RESOURCE_FOLDER_SUPPRIMER_PRESET = os.path.join(SCRIPT_DIR, 'resources', 'SupprimerPreset')
 # Presets : ensemble de valeurs nomme, enregistrable/rechargeable depuis
@@ -2375,16 +2374,8 @@ def run(context):
         existing = cmd_defs.itemById(CMD_ID_CREATE)
         if existing:
             existing.deleteMe()
-        # Icone "mise a jour disponible" tant qu'une version plus
-        # recente vient d'etre copiee depuis le Drive (donc PAS encore
-        # active pour cette session) ; redevient l'icone normale des
-        # que le prochain Arret/Relance charge la version a jour (a ce
-        # moment, _check_and_apply_updates() ne trouve plus rien de
-        # plus recent sur le Drive).
-        _resource_folder_bouton = (
-            RESOURCE_FOLDER_MISE_A_JOUR if _maj else RESOURCE_FOLDER_MEUBLE)
         cmd_def_create = cmd_defs.addButtonDefinition(
-            CMD_ID_CREATE, CMD_NAME_CREATE, CMD_TOOLTIP_CREATE, _resource_folder_bouton)
+            CMD_ID_CREATE, CMD_NAME_CREATE, CMD_TOOLTIP_CREATE, RESOURCE_FOLDER_MEUBLE)
         on_created_create = CreateCommandCreatedHandler()
         cmd_def_create.commandCreated.add(on_created_create)
         handlers.append(on_created_create)
