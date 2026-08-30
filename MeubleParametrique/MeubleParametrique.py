@@ -6,6 +6,11 @@ import os
 import re
 import traceback
 
+# Numero de version affiche dans le dialogue (sous le logo, et dans
+# le bloc Mise a jour). Format N.NN. A incrementer manuellement a
+# chaque publication sur Drive/GitHub.
+ADDIN_VERSION = '1.01'
+
 app = None
 ui = None
 handlers = []
@@ -2016,15 +2021,11 @@ def add_meuble_fields(inputs, cur_mm_func):
     inputs.addBoolValueInput('buttonAppliquer', 'Appliquer',
                               False, RESOURCE_FOLDER_APPLIQUER, False)
 
-    try:
-        _date_version = datetime.datetime.fromtimestamp(
-            os.path.getmtime(os.path.join(SCRIPT_DIR, 'MeubleParametrique.py'))
-        ).strftime('%d/%m/%Y %H:%M')
-    except Exception:
-        _date_version = 'inconnue'
+    _version_detectee = _extract_version(
+        os.path.join(SCRIPT_DIR, 'MeubleParametrique.py')) or 'inconnue'
     inputs.addTextBoxCommandInput(
         'textMiseAJour', '',
-        'Mise à jour : ' + _date_version + '\n\n'
+        'Mise à jour détectée : V ' + _version_detectee + '\n\n'
         "Pour relancer l'add-in : Utilitaires > Compléments > "
         "Scripts et compléments (ou Maj+S) > MeubleParametrique > "
         "Arrêter > Exécuter (ou redémarrer Fusion 360).",
@@ -2226,6 +2227,19 @@ def update_field_visibility(inputs):
 UPDATE_FILES = (
     'MeubleParametrique.py', 'meuble_layout.py', 'meuble_geometry.py',
     'meuble_persistence.py')
+
+
+def _extract_version(file_path):
+    """Extrait le numero de version (ADDIN_VERSION = 'N.NN') d'un
+    fichier MeubleParametrique.py donne, sans l'importer (simple
+    lecture texte + regex). Renvoie None si non trouve/illisible."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            contenu = f.read()
+        m = re.search(r"ADDIN_VERSION\s*=\s*['\"]([\d.]+)['\"]", contenu)
+        return m.group(1) if m else None
+    except Exception:
+        return None
 
 
 def _find_drive_update_folder():
@@ -2430,6 +2444,9 @@ class CreateCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             _logo_path = os.path.join(SCRIPT_DIR, 'resources', 'logo_atelier_10pct.png')
             if os.path.isfile(_logo_path):
                 inputs.addImageCommandInput('imageLogoAtelier', '', _logo_path)
+            _txt_version = inputs.addTextBoxCommandInput(
+                'textVersionAddin', '',
+                'Meuble Paramétrique V ' + ADDIN_VERSION, 1, True)
 
             dd_meuble = inputs.addDropDownCommandInput(
                 'dropdownMeuble', 'Meuble', adsk.core.DropDownStyles.TextListDropDownStyle)
