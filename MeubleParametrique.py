@@ -9,7 +9,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.05'
+ADDIN_VERSION = '1.06'
 
 app = None
 ui = None
@@ -2029,13 +2029,14 @@ def add_meuble_fields(inputs, cur_mm_func):
         pass
     _version_detectee = _extract_version(
         os.path.join(SCRIPT_DIR, 'MeubleParametrique.py')) or 'inconnue'
-    inputs.addTextBoxCommandInput(
-        'textMiseAJour', '',
-        'Mise à jour détectée : V ' + _version_detectee + '\n\n'
-        "Pour relancer l'add-in : Utilitaires > Compléments > "
-        "Scripts et compléments (ou Maj+S) > MeubleParametrique > "
-        "Arrêter > Exécuter (ou redémarrer Fusion 360).",
-        6, True)
+    if _version_detectee != ADDIN_VERSION:
+        inputs.addTextBoxCommandInput(
+            'textMiseAJour', '',
+            'Mise à jour détectée : V ' + _version_detectee + '\n\n'
+            "Pour relancer l'add-in : Utilitaires > Compléments > "
+            "Scripts et compléments (ou Maj+S) > MeubleParametrique > "
+            "Arrêter > Exécuter (ou redémarrer Fusion 360).",
+            6, True)
 
 
 def collect_values_mm(inputs):
