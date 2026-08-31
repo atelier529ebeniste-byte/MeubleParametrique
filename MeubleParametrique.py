@@ -9,7 +9,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.07'
+ADDIN_VERSION = '1.08'
 
 app = None
 ui = None
@@ -2572,8 +2572,8 @@ class CreateInputChangedHandler(adsk.core.InputChangedEventHandler):
             elif (args.input.id.startswith('dropdownPercage32Colonne')
                   and args.input.id.endswith('Systeme')):
                 update_field_visibility(full_inputs)
-            elif (args.input.id.startswith('dropdownPortesColonne')
-                  and args.input.id.endswith('Choix')):
+            elif (args.input.id.startswith('tablePortesCol')
+                  and 'Choix' in args.input.id):
                 update_field_visibility(full_inputs)
                 # Une porte active interdit les tiroirs sur la meme
                 # niche : reconstruit le tableau Tiroirs pour refleter
