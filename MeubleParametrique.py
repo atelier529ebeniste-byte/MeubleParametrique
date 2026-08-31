@@ -9,7 +9,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.08'
+ADDIN_VERSION = '1.09'
 
 app = None
 ui = None
@@ -387,13 +387,17 @@ def apply_meuble_selection(inputs, override_values=None):
             li.isSelected = (li.name == target_label)
     dd_montage_portes = inputs.itemById('dropdownPortesMontage')
     if dd_montage_portes:
-        target_label_m = ('À visser' if values.get('portes_montage') == 'visser'
+        _mp_val = values.get('portes_montage')
+        target_label_m = ('Off' if _mp_val == 'off'
+                          else 'À visser' if _mp_val == 'visser'
                           else 'Inserta/à frapper')
         for li in dd_montage_portes.listItems:
             li.isSelected = (li.name == target_label_m)
     dd_montage_embase = inputs.itemById('dropdownPortesMontageEmbase')
     if dd_montage_embase:
-        target_label_e = ('À visser' if values.get('portes_montage_embase') == 'visser'
+        _me_val = values.get('portes_montage_embase')
+        target_label_e = ('Off' if _me_val == 'off'
+                          else 'À visser' if _me_val == 'visser'
                           else 'Eurovis')
         for li in dd_montage_embase.listItems:
             li.isSelected = (li.name == target_label_e)
@@ -1948,14 +1952,18 @@ def add_meuble_fields(inputs, cur_mm_func):
     dd_montage_portes = gce.addDropDownCommandInput(
         'dropdownPortesMontage', 'Montage charnière',
         adsk.core.DropDownStyles.TextListDropDownStyle)
-    dd_montage_portes.listItems.add('Inserta/à frapper', montage_portes_actuel != 'visser')
+    dd_montage_portes.listItems.add(
+        'Inserta/à frapper', montage_portes_actuel not in ('visser', 'off'))
     dd_montage_portes.listItems.add('À visser', montage_portes_actuel == 'visser')
+    dd_montage_portes.listItems.add('Off', montage_portes_actuel == 'off')
     montage_embase_actuel = cur_mm_func('portes_montage_embase', 'eurovis')
     dd_montage_embase = gce.addDropDownCommandInput(
         'dropdownPortesMontageEmbase', 'Montage embase',
         adsk.core.DropDownStyles.TextListDropDownStyle)
-    dd_montage_embase.listItems.add('Eurovis', montage_embase_actuel != 'visser')
+    dd_montage_embase.listItems.add(
+        'Eurovis', montage_embase_actuel not in ('visser', 'off'))
     dd_montage_embase.listItems.add('À visser', montage_embase_actuel == 'visser')
+    dd_montage_embase.listItems.add('Off', montage_embase_actuel == 'off')
     # Percage des charnieres Inserta Blum (godet + chevilles), ancre sur
     # le systeme 32 -- voir hinge_positions_locales_mm dans meuble_layout.
     add_value_field(gce, 'champCharniereAxeBasse', 'Axe charnière basse',
@@ -2179,14 +2187,20 @@ def collect_values_mm(inputs):
     else:
         values['portes_mode'] = 'applique'
     dd_montage_portes = inputs.itemById('dropdownPortesMontage')
-    if (dd_montage_portes and dd_montage_portes.selectedItem
-            and dd_montage_portes.selectedItem.name == 'À visser'):
+    _sel_mp = (dd_montage_portes.selectedItem.name
+               if dd_montage_portes and dd_montage_portes.selectedItem else '')
+    if _sel_mp == 'Off':
+        values['portes_montage'] = 'off'
+    elif _sel_mp == 'À visser':
         values['portes_montage'] = 'visser'
     else:
         values['portes_montage'] = 'inserta'
     dd_montage_embase = inputs.itemById('dropdownPortesMontageEmbase')
-    if (dd_montage_embase and dd_montage_embase.selectedItem
-            and dd_montage_embase.selectedItem.name == 'À visser'):
+    _sel_me = (dd_montage_embase.selectedItem.name
+               if dd_montage_embase and dd_montage_embase.selectedItem else '')
+    if _sel_me == 'Off':
+        values['portes_montage_embase'] = 'off'
+    elif _sel_me == 'À visser':
         values['portes_montage_embase'] = 'visser'
     else:
         values['portes_montage_embase'] = 'eurovis'

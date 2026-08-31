@@ -496,13 +496,34 @@ def drill_holes_batch(comp, axis, plane, sign, diam, depth, centers, name):
 
 def clear_component_geometry(comp):
     """Supprime toutes les extrusions puis toutes les esquisses du composant,
-    pour permettre une reconstruction propre (utilisé par Modifier)."""
+    pour permettre une reconstruction propre (utilisé par Modifier).
+    Tolerant aux references perdues (ex. modification manuelle du
+    meuble entre 2 passages dans l'add-in, qui peut casser une
+    fonction Combiner/RemoveBody plus loin dans l'historique) : une
+    fonction qui echoue a se supprimer est ignoree (pas d'arret
+    brutal), et les corps orphelins restants sont retires
+    directement en dernier recours."""
     features = comp.features.extrudeFeatures
     for i in range(features.count - 1, -1, -1):
-        features.item(i).deleteMe()
+        try:
+            features.item(i).deleteMe()
+        except Exception:
+            pass
     sketches = comp.sketches
     for i in range(sketches.count - 1, -1, -1):
-        sketches.item(i).deleteMe()
+        try:
+            sketches.item(i).deleteMe()
+        except Exception:
+            pass
+    # Dernier recours : si des fonctions n'ont pas pu etre supprimees
+    # (reference perdue), leurs corps peuvent trainer -- on les
+    # retire directement pour eviter les doublons a la reconstruction.
+    bodies = comp.bRepBodies
+    for i in range(bodies.count - 1, -1, -1):
+        try:
+            bodies.item(i).deleteMe()
+        except Exception:
+            pass
 
 # ---------------------------------------------------------------------------
 # Parametres utilisateur Fusion (visibles dans le panneau Parametres) : pour
@@ -749,7 +770,7 @@ def build_door_component(meuble_comp, door_spec, name, thickness_param=None):
     body.name = comp.name
     apply_default_material(body)
 
-    if hinges_mm:
+    if hinges_mm and montage_code != 'off':
         _drill_hinges_inserta(comp, largeur_cm, hauteur_cm, ep_cm, sens, mode, hinges_mm, montage_code)
 
     # Prise de main : reperes LOCAUX (voir

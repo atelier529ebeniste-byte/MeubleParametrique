@@ -1346,7 +1346,8 @@ def compute_layout(values):
                                   if bay_i < len(percage32_niches_par_colonne)
                                   and niche_i < len(percage32_niches_par_colonne[bay_i])
                                   else {'systeme': 'off'})
-                if _p32_niche_ici.get('systeme', 'off') == 'off':
+                if (_p32_niche_ici.get('systeme', 'off') == 'off'
+                        and values.get('portes_montage_embase', 'eurovis') != 'off'):
                     _retrait_p32_ici = mm_to_cm(values.get('percage32_retrait', 37))
                     _x_plane_embase = _seg[0] if sens == 'gauche' else _seg[1]
                     _sign_embase = -1 if sens == 'gauche' else 1
@@ -1852,7 +1853,9 @@ def compute_layout(values):
             # ET seulement sur la face du montant/cote ou se trouve
             # REELLEMENT cette charniere (pas les deux faces).
             extra_side = (p32_extra_side_only[bay_i]
-                          if bay_i < len(p32_extra_side_only) else {})
+                          if bay_i < len(p32_extra_side_only)
+                          and values.get('portes_montage_embase', 'eurovis') != 'off'
+                          else {})
             y_avant = retrait_p32
             # Profondeur specifique aux trous d'embase (differente de
             # depth_gauche/depth_droite, qui est celle des trous
