@@ -2575,6 +2575,22 @@ class CreateInputChangedHandler(adsk.core.InputChangedEventHandler):
             elif (args.input.id.startswith('dropdownPortesColonne')
                   and args.input.id.endswith('Choix')):
                 update_field_visibility(full_inputs)
+                # Une porte active interdit les tiroirs sur la meme
+                # niche : reconstruit le tableau Tiroirs pour refleter
+                # immediatement ce changement (pas besoin de cliquer
+                # Rafraichir).
+                _int_m_pc = full_inputs.itemById('intNbMontants')
+                _group_portes_pc = full_inputs.itemById('groupPortesColonnes')
+                _group_tiroirs_pc = full_inputs.itemById('groupTiroirsColonnes')
+                if _int_m_pc and _group_portes_pc and _group_tiroirs_pc:
+                    _existing_portes_pc = read_portes_tables(
+                        _group_portes_pc.children, _int_m_pc.value + 1, inputs=full_inputs)
+                    _existing_tiroirs_pc = read_tiroirs_tables(
+                        _group_tiroirs_pc.children, _int_m_pc.value + 1, inputs=full_inputs)
+                    rebuild_tiroirs_tables(
+                        _group_tiroirs_pc.children, _int_m_pc.value + 1,
+                        _existing_tiroirs_pc, inputs=full_inputs,
+                        portes_colonnes=_existing_portes_pc)
             elif (args.input.id.startswith('intEtageresColonne')
                   and args.input.id.endswith('NbEtageres')):
                 update_field_visibility(full_inputs)
