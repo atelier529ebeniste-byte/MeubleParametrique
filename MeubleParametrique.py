@@ -9,7 +9,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.06'
+ADDIN_VERSION = '1.07'
 
 app = None
 ui = None
@@ -418,7 +418,8 @@ def apply_meuble_selection(inputs, override_values=None):
     if group_tiroirs:
         rebuild_tiroirs_tables(
             group_tiroirs.children, nb_colonnes,
-            values.get('tiroirs_colonnes'), inputs=inputs)
+            values.get('tiroirs_colonnes'), inputs=inputs,
+            portes_colonnes=values.get('portes_colonnes'))
     tab_prise_main = inputs.itemById('tabPriseMain')
     if tab_prise_main:
         rebuild_prise_main_table(
@@ -822,7 +823,25 @@ def refresh_tiroirs_niche_detail(inputs, col_i, niche_idx):
             tir_table.addCommandInput(dd_cap, tk, 3)
 
 
-def rebuild_tiroirs_tables(children, count, existing_colonnes=None, inputs=None):
+def _niche_a_porte(portes_colonnes, col_i, niche_idx0):
+    """Renvoie True si la niche 'niche_idx0' (index 0, MEME ordre brut
+    que les tableaux Colonnes -- Niche 01 = index 0) de la colonne
+    'col_i' (1-indexee) a une porte active (choix != 'off'). Sert a
+    interdire les tiroirs dans une niche qui a deja une porte."""
+    if not portes_colonnes or col_i > len(portes_colonnes):
+        return False
+    col = portes_colonnes[col_i - 1]
+    niches = col if isinstance(col, list) else ([col] if col else [])
+    if niche_idx0 >= len(niches):
+        return False
+    entry = niches[niche_idx0]
+    if not isinstance(entry, dict):
+        return False
+    return entry.get('choix', 'off') != 'off'
+
+
+def rebuild_tiroirs_tables(children, count, existing_colonnes=None, inputs=None,
+                            portes_colonnes=None):
     # Un tableau INDEPENDANT a chaque niveau (jamais de lignes partagees
     # entre plusieurs Niche NN ou plusieurs Tiroir NN) : 1) en-tete par
     # colonne, 2) un tableau PAR NICHE (Niche NN / indicateur Hauteur
@@ -869,6 +888,25 @@ def rebuild_tiroirs_tables(children, count, existing_colonnes=None, inputs=None)
                 entries.append(('Niche {:02d}'.format(k), niche))
 
         for niche_idx, (niche_label, entry) in enumerate(entries):
+            if _niche_a_porte(portes_colonnes, i, niche_idx):
+                # Porte deja active sur cette niche : pas de tiroir
+                # possible -- ligne indicative en lecture seule au lieu
+                # du tableau editable habituel (et nb_tiroirs force a 0
+                # via read_tiroirs_tables cote lecture, id absente ici).
+                table_bloque = children.addTableCommandInput(
+                    'tableTirNicheCol{:02d}_{:02d}'.format(i, niche_idx), '', 2, '3:5')
+                table_bloque.hasGrid = False
+                table_bloque.minimumVisibleRows = 1
+                lbl_b = table_bloque.commandInputs.addStringValueInput(
+                    'tableTirCol{:02d}Label{}'.format(i, niche_idx), '', niche_label)
+                lbl_b.isReadOnly = True
+                info_b = table_bloque.commandInputs.addStringValueInput(
+                    'tableTirCol{:02d}Info{}'.format(i, niche_idx), '',
+                    'Porte active sur cette niche — tiroir indisponible')
+                info_b.isReadOnly = True
+                table_bloque.addCommandInput(lbl_b, 0, 0)
+                table_bloque.addCommandInput(info_b, 0, 1)
+                continue
             mode_actuel = entry.get('mode', 'hauteur_niche')
             if mode_actuel not in dict(TIROIRS_MODES):
                 mode_actuel = 'hauteur_niche'
@@ -1337,7 +1375,8 @@ def refresh_etagere_fixe_colonne(inputs, col_i):
             existing_tiroirs = read_tiroirs_tables(
                 group_tiroirs.children, int_m2.value + 1, inputs=inputs)
             rebuild_tiroirs_tables(
-                group_tiroirs.children, int_m2.value + 1, existing_tiroirs, inputs=inputs)
+                group_tiroirs.children, int_m2.value + 1, existing_tiroirs, inputs=inputs,
+                portes_colonnes=existing_portes)
         adsk.doEvents()
 
 
@@ -1595,7 +1634,8 @@ def refresh_computed_fields(inputs):
         existing_tiroirs = read_tiroirs_tables(
             group_tiroirs.children, int_m.value + 1, inputs=inputs)
         rebuild_tiroirs_tables(
-            group_tiroirs.children, int_m.value + 1, existing_tiroirs, inputs=inputs)
+            group_tiroirs.children, int_m.value + 1, existing_tiroirs, inputs=inputs,
+            portes_colonnes=existing_portes if group_portes and int_m else None)
     tab_prise_main = inputs.itemById('tabPriseMain')
     if tab_prise_main and int_m:
         existing_portes_pm = read_portes_tables(inputs, int_m.value + 1, inputs=inputs)
@@ -1973,7 +2013,8 @@ def add_meuble_fields(inputs, cur_mm_func):
     group_tiroirs.isExpanded = True
     rebuild_tiroirs_tables(
         group_tiroirs.children, cur_nb_m + 1,
-        values_tiroirs_actuelles.get('tiroirs_colonnes'), inputs=inputs)
+        values_tiroirs_actuelles.get('tiroirs_colonnes'), inputs=inputs,
+        portes_colonnes=cur_mm_func('portes_colonnes', None))
 
     # --- Volet 6bis : Prise de main -----------------------------------
     tab_prise_main = inputs.addTabCommandInput('tabPriseMain', 'Prise de main')
