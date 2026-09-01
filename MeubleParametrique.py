@@ -9,7 +9,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.09'
+ADDIN_VERSION = '1.10'
 
 app = None
 ui = None
@@ -2050,7 +2050,7 @@ def add_meuble_fields(inputs, cur_mm_func):
         dd_preset.listItems.add(_pname, False)
     ga.addBoolValueInput('checkPresetDelete', 'Supprimer le preset',
                           False, RESOURCE_FOLDER_SUPPRIMER_PRESET, False)
-    ga.addStringValueInput('champPresetNom', 'Nom du preset à enregistrer/supprimer', '')
+    ga.addStringValueInput('champPresetNom', 'Nouveau preset', '')
     ga.addBoolValueInput('checkPresetSaveAs', 'Enregistrer le preset',
                           False, RESOURCE_FOLDER_SAVE_DEFAULT, False)
 
