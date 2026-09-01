@@ -2510,7 +2510,7 @@ class CreateCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
                 os.path.join(SCRIPT_DIR, 'MeubleParametrique.py'))
             _libelle_version = 'Meuble Paramétrique V ' + ADDIN_VERSION
             if _version_disque_ici and _version_disque_ici != ADDIN_VERSION:
-                _libelle_version += ' (ancienne version, relancez l\'add-in)'
+                _libelle_version += ' (Mise à jour disponible)'
             _txt_version = inputs.addTextBoxCommandInput(
                 'textVersionAddin', '', _libelle_version, 1, True)
 
