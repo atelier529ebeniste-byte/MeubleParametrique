@@ -20,8 +20,8 @@ FIELDS_CAISSON = [
     ('champHauteur', 'hauteur', 1200, 200, 2780, 'Hauteur'),
     ('champLargeur', 'largeur', 1000, 100, 2780, 'Largeur'),
     ('champProfondeur', 'profondeur', 500, 150, 1500, 'Profondeur'),
-    ('champEpPanneau', 'ep_panneau', 19, 8, 40, 'Épaisseur panneaux'),
-    ('champEpFond', 'ep_fond', 8, 3, 19, 'Épaisseur fond'),
+    ('champEpPanneau', 'ep_panneau', 19, 8, 40, 'Épaisseur panneaux meuble'),
+    ('champEpFond', 'ep_fond', 8, 0, 19, 'Épaisseur fond meuble'),
 ]
 
 

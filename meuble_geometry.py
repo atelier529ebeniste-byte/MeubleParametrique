@@ -130,9 +130,54 @@ def _largest_profile(sketch):
     return best
 
 
+def cut_miter_wedge_xz(comp, target_body, tri_xz, y0, y1, name):
+    """Coupe un prisme triangulaire (coupe d'onglet 45 degres) dans
+    'target_body' : profil triangulaire 'tri_xz' = liste de 3 (x,z)
+    (cm), extrude sur toute la plage Y [y0,y1] (profondeur). Plan
+    xZConstructionPlane, mapping mesure empiriquement : esquisse
+    (u,v) -> monde (x=u, y=0, z=-v)."""
+    def uv(x, z):
+        return adsk.core.Point3D.create(x, -z, 0)
+    sketch = comp.sketches.add(comp.xZConstructionPlane)
+    sketch.name = name
+    lines = sketch.sketchCurves.sketchLines
+    p1 = uv(*tri_xz[0])
+    p2 = uv(*tri_xz[1])
+    p3 = uv(*tri_xz[2])
+    lines.addByTwoPoints(p1, p2)
+    lines.addByTwoPoints(p2, p3)
+    lines.addByTwoPoints(p3, p1)
+    profile = _largest_profile(sketch)
+    extrudes = comp.features.extrudeFeatures
+    ext_input = extrudes.createInput(profile, adsk.fusion.FeatureOperations.CutFeatureOperation)
+    ext_input.participantBodies = [target_body]
+    ext_input.startExtent = adsk.fusion.OffsetStartDefinition.create(
+        adsk.core.ValueInput.createByReal(y0))
+    ext_input.setDistanceExtent(False, adsk.core.ValueInput.createByReal(y1 - y0))
+    extrudes.add(ext_input)
+
+
+def _supprimer_esquisses_homonymes(comp, name):
+    """Supprime toute esquisse existante portant deja ce nom, avant
+    d'en creer une nouvelle. Filet de securite : si un nettoyage
+    precedent (clear_component_geometry) a echoue partiellement a
+    supprimer une esquisse (ex. reference perdue apres modification
+    manuelle), une esquisse residuelle homonyme peut fausser la
+    detection de profil (_largest_profile) ou faire echouer
+    l'extrusion avec une erreur generique."""
+    for i in range(comp.sketches.count - 1, -1, -1):
+        sk = comp.sketches.item(i)
+        if sk.name == name:
+            try:
+                sk.deleteMe()
+            except Exception:
+                pass
+
+
 def add_panel_xy(comp, x0, x1, y0, y1, z_start, z_extent, name, thickness_param=None):
     """Esquisse un rectangle (x0,y0)-(x1,y1) sur le plan XY et l'extrude
     selon Z, à partir de z_start sur une hauteur z_extent. Coordonnées en cm."""
+    _supprimer_esquisses_homonymes(comp, name)
     sketch = comp.sketches.add(comp.xYConstructionPlane)
     sketch.name = name
     sketch.sketchCurves.sketchLines.addTwoPointRectangle(
@@ -146,7 +191,20 @@ def add_panel_xy(comp, x0, x1, y0, y1, z_start, z_extent, name, thickness_param=
         ext_input.setDistanceExtent(False, adsk.core.ValueInput.createByString(thickness_param))
     else:
         ext_input.setDistanceExtent(False, adsk.core.ValueInput.createByReal(z_extent))
-    extrude = extrudes.add(ext_input)
+    try:
+        extrude = extrudes.add(ext_input)
+    except Exception:
+        # Repli : si la reference au parametre Fusion (thickness_param)
+        # pose probleme (ex. parametre incoherent apres modification
+        # d'un meuble existant), retente avec une valeur numerique
+        # directe -- le panneau garde alors sa bonne epaisseur mais
+        # perd le pilotage direct par le parametre Fusion (redevient
+        # correct au prochain Appliquer complet).
+        if thickness_param:
+            ext_input.setDistanceExtent(False, adsk.core.ValueInput.createByReal(z_extent))
+            extrude = extrudes.add(ext_input)
+        else:
+            raise
     body = extrude.bodies.item(0)
     body.name = name
     apply_default_material(body)
@@ -156,6 +214,7 @@ def add_panel_xy(comp, x0, x1, y0, y1, z_start, z_extent, name, thickness_param=
 def add_panel_xz(comp, x0, x1, z0, z1, y_start, y_extent, name, thickness_param=None):
     """Esquisse un rectangle sur le plan XZ (u=X, v=-Z) et l'extrude selon Y,
     à partir de y_start sur une profondeur y_extent. Coordonnées en cm."""
+    _supprimer_esquisses_homonymes(comp, name)
     sketch = comp.sketches.add(comp.xZConstructionPlane)
     sketch.name = name
     sketch.sketchCurves.sketchLines.addTwoPointRectangle(
@@ -169,7 +228,14 @@ def add_panel_xz(comp, x0, x1, z0, z1, y_start, y_extent, name, thickness_param=
         ext_input.setDistanceExtent(False, adsk.core.ValueInput.createByString(thickness_param))
     else:
         ext_input.setDistanceExtent(False, adsk.core.ValueInput.createByReal(y_extent))
-    extrude = extrudes.add(ext_input)
+    try:
+        extrude = extrudes.add(ext_input)
+    except Exception:
+        if thickness_param:
+            ext_input.setDistanceExtent(False, adsk.core.ValueInput.createByReal(y_extent))
+            extrude = extrudes.add(ext_input)
+        else:
+            raise
     body = extrude.bodies.item(0)
     body.name = name
     apply_default_material(body)
@@ -547,10 +613,11 @@ THICKNESS_PARAM_DEFS = {
                   'epaisseur coherente partout, modifie Epaisseur panneaux '
                   'dans la boite de dialogue Meuble Parametrique puis '
                   'clique Appliquer.'),
-    'EpFond': ('ep_fond',
-               'Epaisseur du fond de tiroir (mm), pilote uniquement le '
-               'panneau Tiroir N Fond bas de chaque tiroir. Ne pilote pas '
-               'le fond du caisson (panneau Fond).'),
+    'EpFond': ('ep_fond_tiroir',
+               'Epaisseur du fond de tiroir (mm), distincte de "Epaisseur '
+               'fond" du caisson. Pilote uniquement le panneau Tiroir N '
+               'Fond bas de chaque tiroir. Ne pilote pas le fond du '
+               'caisson (panneau Fond).'),
     'EpFaceTiroir': ('ep_face_tiroir',
                       'Epaisseur des facades de tiroir (mm).'),
     'EpPorte': ('ep_porte', 'Epaisseur des portes (mm).'),
@@ -630,6 +697,13 @@ def build_meuble_body(comp, values, thickness_params=None, progress=None):
             _, z_plane, hauteur, y_front, x_edge, sens, name, _target = pm
             cut_prise_doigt_z(
                 comp, z_plane, hauteur, y_front, x_edge, sens, name, target_body=pm_target_body)
+    # Coupes d'onglet 45deg (cotes/dessus/dessous) : effectuees une
+    # fois tous les panneaux en place.
+    for mc in layout.get('miter_cuts', []):
+        tri_xz, y0, y1, mc_name, mc_target = mc
+        mc_target_body = bodies_by_name.get(mc_target)
+        if mc_target_body:
+            cut_miter_wedge_xz(comp, mc_target_body, tri_xz, y0, y1, mc_name)
     # Perçages (Lamello + système 32) : effectués une fois tous les panneaux
     # en place, pour creuser dans la matière déjà présente (montants/
     # traverses). Regroupés par (axe, plan, sens, diamètre, profondeur)

@@ -9,7 +9,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.11'
+ADDIN_VERSION = '1.12'
 
 app = None
 ui = None
@@ -313,6 +313,11 @@ def apply_meuble_selection(inputs, override_values=None):
     for field_id, key in (
             ('champSocle', 'socle'),
             ('champRetraitEtagere', 'retrait_etagere'),
+            ('champRetraitMontant', 'retrait_montant'),
+            ('champEpMontant', 'ep_montant'),
+            ('champRetraitEtagereFixe', 'retrait_etagere_fixe'),
+            ('champEpEtagereFixe', 'ep_etagere_fixe'),
+            ('champEpEtagereMobile', 'ep_etagere_mobile'),
             ('champRetraitPlinthe', 'retrait_plinthe'),
             ('champPercage32Retrait', 'percage32_retrait'),
             ('champPercage32MargeBas', 'percage32_marge_bas'),
@@ -322,6 +327,8 @@ def apply_meuble_selection(inputs, override_values=None):
             ('champCharniereAxeHaute', 'charniere_axe_haute'),
             ('champJeuTiroir', 'jeu_tiroir'),
             ('champEpFaceTiroir', 'ep_face_tiroir'),
+            ('champEpFondTiroir', 'ep_fond_tiroir'),
+            ('champEpPanneauTiroir', 'ep_panneau_tiroir'),
             ('champRetraitPercageCoulisse', 'retrait_percage_coulisse')):
         ci = inputs.itemById(field_id)
         if ci and key in values:
@@ -329,6 +336,9 @@ def apply_meuble_selection(inputs, override_values=None):
     chk_socle = inputs.itemById('checkSocleActif')
     if chk_socle and 'socle_actif' in values:
         chk_socle.value = bool(values['socle_actif'])
+    chk_onglet = inputs.itemById('checkCoupeOnglet')
+    if chk_onglet and 'coupe_onglet' in values:
+        chk_onglet.value = bool(values['coupe_onglet'])
     chk_charniere_auto = inputs.itemById('checkCharniereAuto')
     if chk_charniere_auto:
         chk_charniere_auto.value = bool(values.get('charniere_auto', True))
@@ -338,7 +348,7 @@ def apply_meuble_selection(inputs, override_values=None):
         ci = inputs.itemById(field_id)
         if ci and key in values:
             ci.value = int(values[key])
-    group = inputs.itemById('groupMontants')
+    tab_m = inputs.itemById('tabMontants')
     dd_mode_m = inputs.itemById('dropdownMontantsMode')
     if dd_mode_m:
         mode_label = {'axe_egal': 'Axe égal',
@@ -347,9 +357,9 @@ def apply_meuble_selection(inputs, override_values=None):
             values.get('montants_mode', 'axe_egal'), 'Axe égal')
         for li in dd_mode_m.listItems:
             li.isSelected = (li.name == mode_label)
-    if group:
+    if tab_m:
         rebuild_montant_axis_fields(
-            group.children, values.get('nb_montants', 1),
+            tab_m.children, values.get('nb_montants', 1),
             values.get('largeur', 1000), values.get('montants'),
             values.get('montants_mode', 'axe_egal'), values.get('ep_panneau', 19))
     nb_colonnes = values.get('nb_montants', 1) + 1
@@ -859,6 +869,37 @@ def rebuild_tiroirs_tables(children, count, existing_colonnes=None, inputs=None,
     delete_children_by_prefix(children, 'tableTirCol')
     adsk.doEvents()
 
+    # Hauteurs REELLES (mm) des facades de tiroir, calculees via le
+    # meme moteur geometrique que la construction finale (compute_
+    # layout), a partir de l'etat ACTUEL du dialogue -- utilisees
+    # comme valeurs affichees en mode Hauteur egale (lecture seule)
+    # et comme valeurs de depart en mode Personnalise. Si le
+    # dialogue est dans un etat incomplet/invalide (ex. pendant la
+    # saisie), echoue silencieusement -- le repli habituel
+    # (approximation ou vide) s'applique alors.
+    hauteurs_reelles_par_col_niche = {}
+    if inputs is not None:
+        try:
+            _values_actuelles = collect_values_mm(inputs)
+            _layout_actuel = compute_layout(_values_actuelles)
+            _re_nom = re.compile(
+                r'^Colonne (\d+)(?: Niche (\d+))? Tiroir (\d+) Façade$')
+            for _p in _layout_actuel['panels']:
+                if _p[0] != 'XZ':
+                    continue
+                _nom_p = _p[7]
+                _m = _re_nom.match(_nom_p)
+                if not _m:
+                    continue
+                _col_p = int(_m.group(1))
+                _niche_p = int(_m.group(2)) if _m.group(2) else 1
+                _tir_p = int(_m.group(3))
+                _h_mm = cm_to_mm(_p[4] - _p[3])
+                hauteurs_reelles_par_col_niche.setdefault(
+                    (_col_p, _niche_p - 1), {})[_tir_p - 1] = _h_mm
+        except Exception:
+            hauteurs_reelles_par_col_niche = {}
+
     for i in range(1, count + 1):
         if existing_colonnes and i <= len(existing_colonnes):
             col = existing_colonnes[i - 1]
@@ -946,7 +987,21 @@ def rebuild_tiroirs_tables(children, count, existing_colonnes=None, inputs=None,
 
             # --- Tableau 3 : PROPRE a cette niche, en mode Personnalise ---
             nb_t_ici = int(entry.get('nb_tiroirs', 0))
-            if mode_actuel == 'personnalise' and nb_t_ici > 0:
+            est_personnalise = (mode_actuel == 'personnalise')
+            if nb_t_ici > 0:
+                # Hauteurs reelles (mm), calculees via compute_layout a
+                # partir de l'etat actuel du dialogue (voir plus haut) :
+                # affichees en lecture seule en mode Hauteur egale, et
+                # utilisees comme valeur de depart en mode Personnalise
+                # (avant la 1ere modification manuelle par le tiroir).
+                _hauteurs_reelles_ici = hauteurs_reelles_par_col_niche.get(
+                    (i, niche_idx), {})
+                # Repli si compute_layout a echoue (dialogue incomplet) :
+                # ancienne approximation par simple division.
+                _champ_h = inputs.itemById('champHauteur') if inputs else None
+                _hauteur_mm_defaut = cm_to_mm(_champ_h.value) if _champ_h else 1200.0
+                _h_niche_defaut = _hauteur_mm_defaut / max(nb_niches, 1)
+                _h_tiroir_defaut = max(_h_niche_defaut / nb_t_ici, 10.0)
                 tir_table = children.addTableCommandInput(
                     'tableTirCustomCol{:02d}Niche{:02d}'.format(i, niche_idx), '', 4, '2:1:2:2')
                 tir_table.hasGrid = False
@@ -963,10 +1018,19 @@ def rebuild_tiroirs_tables(children, count, existing_colonnes=None, inputs=None,
                         'tableTirCol{:02d}TirHint{}_{}'.format(i, niche_idx, tk),
                         '', 'Hauteur façade')
                     hint_t.isReadOnly = True
+                    _h_reelle_tk = _hauteurs_reelles_ici.get(tk)
+                    if est_personnalise:
+                        _h_defaut_tk = (_h_reelle_tk if _h_reelle_tk is not None
+                                       else _h_tiroir_defaut)
+                        _h_affichee = t.get('hauteur_mm', _h_defaut_tk)
+                    else:
+                        _h_affichee = (_h_reelle_tk if _h_reelle_tk is not None
+                                      else _h_tiroir_defaut)
                     val_h = tir_table.commandInputs.addValueInput(
                         'tableTirCol{:02d}TirHauteur{}_{}'.format(i, niche_idx, tk),
                         '', 'mm',
-                        adsk.core.ValueInput.createByReal(mm_to_cm(t.get('hauteur_mm', 100))))
+                        adsk.core.ValueInput.createByReal(mm_to_cm(_h_affichee)))
+                    val_h.isReadOnly = not est_personnalise
                     cap_actuelle = t.get('capacite_kg', 30)
                     dd_cap = tir_table.commandInputs.addDropDownCommandInput(
                         'tableTirCol{:02d}TirCap{}_{}'.format(i, niche_idx, tk), '',
@@ -1550,7 +1614,7 @@ def refresh_computed_fields(inputs):
     de la boîte de dialogue. Lit les valeurs actuellement affichees de chaque
     colonne AVANT de reconstruire, pour ne jamais perdre ce que l'utilisateur a
     deja saisi ailleurs quand une seule colonne vient de changer."""
-    group = inputs.itemById('groupMontants')
+    tab_m = inputs.itemById('tabMontants')
     int_m = inputs.itemById('intNbMontants')
     # Chaque bloc ci-dessous ne supprime/recree ses volets que si le nombre
     # de colonnes a REELLEMENT change : reconstruire des volets identiques a
@@ -1566,23 +1630,21 @@ def refresh_computed_fields(inputs):
     mode_m = 'axe_egal'
     if dd_mode_m and dd_mode_m.selectedItem:
         mode_m = mode_label_to_code.get(dd_mode_m.selectedItem.name, 'axe_egal')
-    if group and int_m:
+    if tab_m and int_m:
         # En mode Personnalise, on ne recalcule que si le NOMBRE a change
         # (comme les autres onglets) pour ne jamais perdre une saisie
         # manuelle. Dans les 2 modes automatiques, on recalcule toujours
         # (idempotent, et necessaire pour reagir a un changement de mode
         # sans changement de nombre).
         need_rebuild = (mode_m != 'personnalise'
-                        or count_montant_fields(group.children) != int_m.value)
+                        or count_montant_fields(tab_m.children) != int_m.value)
         if need_rebuild:
-            existing_montants = read_montants_from_ui(group.children, count_montant_fields(group.children))
+            existing_montants = read_montants_from_ui(tab_m.children, count_montant_fields(tab_m.children))
             rebuild_montant_axis_fields(
-                group.children, int_m.value, get_largeur_mm(inputs), existing_montants,
+                tab_m.children, int_m.value, get_largeur_mm(inputs), existing_montants,
                 mode_m, get_ep_panneau_mm(inputs))
-        # Deplie automatiquement le volet des lors qu'il y a au moins un
-        # montant a regler, sinon les champs Axe/Reference tout juste
-        # recrees restent invisibles derriere le volet referme.
-        group.isExpanded = int_m.value > 0
+        # (Plus de volet a deplier/replier : Montant intermediaire est
+        # desormais un onglet a part entiere, toujours visible.)
     dd_mode_ef = inputs.itemById('dropdownEtageresFixeMode')
     mode_ef_label_to_code2 = {
         'Axe égal': 'axe_egal',
@@ -1827,27 +1889,9 @@ def add_meuble_fields(inputs, cur_mm_func):
     gd = group_dimensions.children
     for field_id, key, default_mm, min_mm, max_mm, label in FIELDS_CAISSON:
         add_value_field(gd, field_id, label, mm_to_cm(cur_mm_func(key, default_mm)), min_mm, max_mm)
-
-    group_montants = tc.addGroupCommandInput('groupMontants', 'Montant intermédiaire')
-    group_montants.isExpanded = True
-    gm = group_montants.children
-    mode_montants_actuel = cur_mm_func('montants_mode', 'axe_egal')
-    dd_mode_montants = gm.addDropDownCommandInput(
-        'dropdownMontantsMode', 'Mode de calcul',
-        adsk.core.DropDownStyles.TextListDropDownStyle)
-    dd_mode_montants.listItems.add(
-        'Axe égal', mode_montants_actuel == 'axe_egal')
-    dd_mode_montants.listItems.add(
-        'Intérieur Colonne', mode_montants_actuel == 'largeur_colonne')
-    dd_mode_montants.listItems.add(
-        'Personnalisé', mode_montants_actuel == 'personnalise')
-    cur_nb_m = int(cur_mm_func('nb_montants', 1))
-    gm.addIntegerSpinnerCommandInput(
-        'intNbMontants', 'Nombre de montants', 0, MAX_COMPTEUR, 1, cur_nb_m)
-    largeur_courante = cur_mm_func('largeur', 1000)
-    rebuild_montant_axis_fields(
-        gm, cur_nb_m, largeur_courante, cur_mm_func('montants', None),
-        mode_montants_actuel, cur_mm_func('ep_panneau', 19))
+    gd.addBoolValueInput(
+        'checkCoupeOnglet', "Coupe d'onglet", True, '',
+        bool(cur_mm_func('coupe_onglet', False)))
 
     group_socle = tc.addGroupCommandInput('groupSocle', 'Socle')
     group_socle.isExpanded = True
@@ -1859,14 +1903,39 @@ def add_meuble_fields(inputs, cur_mm_func):
     add_value_field(gs, 'champRetraitPlinthe', 'Retrait plinthe',
                      mm_to_cm(cur_mm_func('retrait_plinthe', 5)), 0, 500)
 
+    # --- Volet Montant intermédiaire (deplace hors de Caisson) ----------
+    tab_montants = inputs.addTabCommandInput('tabMontants', 'Montant intermédiaire')
+    tm = tab_montants.children
+    mode_montants_actuel = cur_mm_func('montants_mode', 'axe_egal')
+    dd_mode_montants = tm.addDropDownCommandInput(
+        'dropdownMontantsMode', 'Mode de calcul',
+        adsk.core.DropDownStyles.TextListDropDownStyle)
+    dd_mode_montants.listItems.add(
+        'Axe égal', mode_montants_actuel == 'axe_egal')
+    dd_mode_montants.listItems.add(
+        'Intérieur Colonne', mode_montants_actuel == 'largeur_colonne')
+    dd_mode_montants.listItems.add(
+        'Personnalisé', mode_montants_actuel == 'personnalise')
+    cur_nb_m = int(cur_mm_func('nb_montants', 1))
+    tm.addIntegerSpinnerCommandInput(
+        'intNbMontants', 'Nombre de montants', 0, MAX_COMPTEUR, 1, cur_nb_m)
+    largeur_courante = cur_mm_func('largeur', 1000)
+    rebuild_montant_axis_fields(
+        tm, cur_nb_m, largeur_courante, cur_mm_func('montants', None),
+        mode_montants_actuel, cur_mm_func('ep_panneau', 19))
+    add_value_field(tm, 'champRetraitMontant', 'Retrait',
+                     mm_to_cm(cur_mm_func('retrait_montant', 0)), 0, 100)
+    add_value_field(tm, 'champEpMontant', 'Épaisseur',
+                     mm_to_cm(cur_mm_func('ep_montant', cur_mm_func('ep_panneau', 19))), 8, 40)
+
     # --- Volet 2 : Étagères fixe --------------------------------------------
     tab_etageres_fixe = inputs.addTabCommandInput('tabEtageresFixe', 'Étagères fixe')
     gef = tab_etageres_fixe.children
     # Un volet rabattable par colonne (compartiment d'étagère, même
     # correspondance que Perçage 32 / Étagères mobile), chacun avec son
     # propre Nombre d'étagères et une Hauteur (mm, axe de l'étagère depuis le
-    # bas du Dessous) par étagère de cette colonne. Pas de Retrait : ces
-    # étagères sont toujours en profondeur pleine.
+    # bas du Dessous) par étagère de cette colonne. Retrait commun a
+    # toutes les colonnes (comme Étagères mobile).
     values_ef_actuelles = {'etageres_fixes_colonnes': cur_mm_func('etageres_fixes_colonnes', None)}
     mode_ef_actuel = cur_mm_func('etageres_fixe_mode', 'hauteur_colonne')
     dd_mode_ef = gef.addDropDownCommandInput(
@@ -1878,7 +1947,11 @@ def add_meuble_fields(inputs, cur_mm_func):
         'Intérieur niche', mode_ef_actuel == 'hauteur_colonne')
     dd_mode_ef.listItems.add(
         'Personnalisé', mode_ef_actuel == 'personnalise')
-    group_ef = gef.addGroupCommandInput('groupEtageresFixeColonnes', 'Colonnes')
+    add_value_field(gef, 'champRetraitEtagereFixe', 'Retrait',
+                     mm_to_cm(cur_mm_func('retrait_etagere_fixe', 0)), 0, 100)
+    add_value_field(gef, 'champEpEtagereFixe', 'Épaisseur',
+                     mm_to_cm(cur_mm_func('ep_etagere_fixe', cur_mm_func('ep_panneau', 19))), 8, 40)
+    group_ef = gef.addGroupCommandInput('groupEtageresFixeColonnes', 'Étagères')
     group_ef.isExpanded = True
     rebuild_etageres_fixe_colonne_groups(
         group_ef.children, cur_nb_m + 1,
@@ -1917,6 +1990,8 @@ def add_meuble_fields(inputs, cur_mm_func):
     # Retrait : commun à toutes les colonnes.
     add_value_field(ge, 'champRetraitEtagere', 'Retrait',
                      mm_to_cm(cur_mm_func('retrait_etagere', 0)), 0, 100)
+    add_value_field(ge, 'champEpEtagereMobile', 'Épaisseur',
+                     mm_to_cm(cur_mm_func('ep_etagere_mobile', cur_mm_func('ep_panneau', 19))), 8, 40)
     # Un volet rabattable par colonne (même correspondance colonne <->
     # compartiment que Perçage 32), chacun avec son propre Nombre d'étagères
     # et son propre Mode de calcul.
@@ -1925,7 +2000,7 @@ def add_meuble_fields(inputs, cur_mm_func):
         'nb_etageres': cur_mm_func('nb_etageres', 0),
         'etageres_mode': cur_mm_func('etageres_mode', 'hauteur_colonne'),
     }
-    group_etageres = ge.addGroupCommandInput('groupEtageresColonnes', 'Colonnes')
+    group_etageres = ge.addGroupCommandInput('groupEtageresColonnes', 'Étagères')
     group_etageres.isExpanded = True
     rebuild_etageres_tables(
         group_etageres.children, cur_nb_m + 1,
@@ -1982,7 +2057,7 @@ def add_meuble_fields(inputs, cur_mm_func):
     # Portes. Voir compute_layout pour la geometrie exacte (bornes de
     # colonne, jeu, recoupe sur etageres fixe).
     values_portes_actuelles = {'portes_colonnes': cur_mm_func('portes_colonnes', None)}
-    group_portes = gp.addGroupCommandInput('groupPortesColonnes', 'Colonnes')
+    group_portes = gp.addGroupCommandInput('groupPortesColonnes', 'Portes')
     group_portes.isExpanded = True
     rebuild_portes_tables(
         group_portes.children, cur_nb_m + 1,
@@ -1999,11 +2074,15 @@ def add_meuble_fields(inputs, cur_mm_func):
     dd_mode_tiroirs.listItems.add('Encastré', mode_tiroirs_actuel == 'encastre')
     add_value_field(gt, 'champRetraitPercageCoulisse',
                      'Décalage en profondeur',
-                     mm_to_cm(cur_mm_func('retrait_percage_coulisse', 0)), 0, 20)
+                     mm_to_cm(cur_mm_func('retrait_percage_coulisse', 0)), 0, 100)
     add_value_field(gt, 'champJeuTiroir', 'Jeu périphérique façade',
                      mm_to_cm(cur_mm_func('jeu_tiroir', 2)), 0.5, 10)
     add_value_field(gt, 'champEpFaceTiroir', 'Épaisseur façade',
                      mm_to_cm(cur_mm_func('ep_face_tiroir', cur_mm_func('ep_panneau', 19))), 8, 40)
+    add_value_field(gt, 'champEpFondTiroir', 'Épaisseur fond tiroir',
+                     mm_to_cm(cur_mm_func('ep_fond_tiroir', cur_mm_func('ep_fond', 8))), 3, 19)
+    add_value_field(gt, 'champEpPanneauTiroir', 'Épaisseur panneaux tiroir',
+                     mm_to_cm(cur_mm_func('ep_panneau_tiroir', cur_mm_func('ep_panneau', 19))), 8, 40)
     group_coulisse = gt.addGroupCommandInput('groupCoulisse', 'Coulisse')
     group_coulisse.isExpanded = True
     gco = group_coulisse.children
@@ -2017,7 +2096,7 @@ def add_meuble_fields(inputs, cur_mm_func):
     # mobile (Colonne NN / Nombre de tiroirs / Mode de calcul), une
     # entree par niche si la colonne en a plusieurs.
     values_tiroirs_actuelles = {'tiroirs_colonnes': cur_mm_func('tiroirs_colonnes', None)}
-    group_tiroirs = gt.addGroupCommandInput('groupTiroirsColonnes', 'Colonnes')
+    group_tiroirs = gt.addGroupCommandInput('groupTiroirsColonnes', 'Façades')
     group_tiroirs.isExpanded = True
     rebuild_tiroirs_tables(
         group_tiroirs.children, cur_nb_m + 1,
@@ -2114,8 +2193,16 @@ def collect_values_mm(inputs):
     values['socle_actif'] = chk_socle.value if chk_socle else True
     values['socle'] = val_mm('champSocle', 20)
     values['retrait_plinthe'] = val_mm('champRetraitPlinthe', 5)
+    chk_onglet = inputs.itemById('checkCoupeOnglet')
+    values['coupe_onglet'] = chk_onglet.value if chk_onglet else False
 
     values['retrait_etagere'] = val_mm('champRetraitEtagere', 0)
+    values['ep_etagere_mobile'] = val_mm(
+        'champEpEtagereMobile', values['ep_panneau'])
+    values['retrait_montant'] = val_mm('champRetraitMontant', 0)
+    values['ep_montant'] = val_mm('champEpMontant', values['ep_panneau'])
+    values['retrait_etagere_fixe'] = val_mm('champRetraitEtagereFixe', 0)
+    values['ep_etagere_fixe'] = val_mm('champEpEtagereFixe', values['ep_panneau'])
 
     dd_mode_m = inputs.itemById('dropdownMontantsMode')
     mode_label_to_code = {
@@ -2224,6 +2311,9 @@ def collect_values_mm(inputs):
         values['tiroirs_mode'] = 'applique'
     values['jeu_tiroir'] = val_mm('champJeuTiroir', 2)
     values['ep_face_tiroir'] = val_mm('champEpFaceTiroir', values['ep_panneau'])
+    values['ep_fond_tiroir'] = val_mm('champEpFondTiroir', values.get('ep_fond', 8))
+    values['ep_panneau_tiroir'] = val_mm(
+        'champEpPanneauTiroir', values.get('ep_panneau', 19))
     values['retrait_percage_coulisse'] = val_mm('champRetraitPercageCoulisse', 0)
     dd_montage_coulisse = inputs.itemById('dropdownTiroirsMontageCoulisse')
     if (dd_montage_coulisse and dd_montage_coulisse.selectedItem
@@ -2258,6 +2348,16 @@ def update_field_visibility(inputs):
     chk_socle = inputs.itemById('checkSocleActif')
     champ_socle = inputs.itemById('champSocle')
     champ_retrait_plinthe = inputs.itemById('champRetraitPlinthe')
+    chk_onglet = inputs.itemById('checkCoupeOnglet')
+    # Le socle n'est pas compatible avec la coupe d'onglet (voir
+    # compute_layout) : desactive et decoche automatiquement la case
+    # Socle des que Coupe d'onglet est cochee.
+    if chk_onglet and chk_onglet.value and chk_socle:
+        if chk_socle.value:
+            chk_socle.value = False
+        chk_socle.isEnabled = False
+    elif chk_socle:
+        chk_socle.isEnabled = True
     if chk_socle:
         if champ_socle:
             champ_socle.isVisible = chk_socle.value
@@ -2581,7 +2681,7 @@ class CreateInputChangedHandler(adsk.core.InputChangedEventHandler):
                 delete_current_preset(full_inputs)
             elif args.input.id == 'buttonAppliquer':
                 apply_button_clicked(args)
-            elif args.input.id in ('checkSocleActif', 'checkCharniereAuto'):
+            elif args.input.id in ('checkSocleActif', 'checkCharniereAuto', 'checkCoupeOnglet'):
                 update_field_visibility(full_inputs)
             elif (args.input.id.startswith('dropdownPercage32Colonne')
                   and args.input.id.endswith('Systeme')):
@@ -2605,6 +2705,20 @@ class CreateInputChangedHandler(adsk.core.InputChangedEventHandler):
                         _group_tiroirs_pc.children, _int_m_pc.value + 1,
                         _existing_tiroirs_pc, inputs=full_inputs,
                         portes_colonnes=_existing_portes_pc)
+                # Le tableau Prise de main liste aussi les portes
+                # (colonne/niche) : le reconstruire pour refleter
+                # immediatement ce changement de Choix.
+                _tab_pm_pc = full_inputs.itemById('tabPriseMain')
+                if _tab_pm_pc and _int_m_pc:
+                    _epp_pc = read_portes_tables(
+                        full_inputs, _int_m_pc.value + 1, inputs=full_inputs)
+                    _ept_pc = read_tiroirs_tables(
+                        full_inputs, _int_m_pc.value + 1, inputs=full_inputs)
+                    _pmp_pc, _pmt_pc = read_prise_main_table(
+                        full_inputs, _int_m_pc.value + 1)
+                    rebuild_prise_main_table(
+                        _tab_pm_pc.children, _int_m_pc.value + 1,
+                        _epp_pc, _ept_pc, _pmp_pc, _pmt_pc, inputs=full_inputs)
             elif (args.input.id.startswith('intEtageresColonne')
                   and args.input.id.endswith('NbEtageres')):
                 update_field_visibility(full_inputs)
@@ -2634,6 +2748,20 @@ class CreateInputChangedHandler(adsk.core.InputChangedEventHandler):
                     niche_idx_t = None
                 if col_i_t is not None and niche_idx_t is not None:
                     refresh_tiroirs_niche_detail(full_inputs, col_i_t, niche_idx_t)
+                # Idem : le nombre de tiroirs d'une niche change la
+                # liste des facades listees dans Prise de main.
+                _int_m_td = full_inputs.itemById('intNbMontants')
+                _tab_pm_td = full_inputs.itemById('tabPriseMain')
+                if _tab_pm_td and _int_m_td:
+                    _epp_td = read_portes_tables(
+                        full_inputs, _int_m_td.value + 1, inputs=full_inputs)
+                    _ept_td = read_tiroirs_tables(
+                        full_inputs, _int_m_td.value + 1, inputs=full_inputs)
+                    _pmp_td, _pmt_td = read_prise_main_table(
+                        full_inputs, _int_m_td.value + 1)
+                    rebuild_prise_main_table(
+                        _tab_pm_td.children, _int_m_td.value + 1,
+                        _epp_td, _ept_td, _pmp_td, _pmt_td, inputs=full_inputs)
         except Exception:
             if ui:
                 ui.messageBox("Erreur mise à jour de l'interface :\n{}".format(traceback.format_exc()))
