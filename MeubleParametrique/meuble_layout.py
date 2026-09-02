@@ -90,6 +90,10 @@ TANDEM_BLUM_PERCAGES_MM = {
 DIAM_PERCAGE_COULISSE_CM = 0.5
 PROFONDEUR_PERCAGE_COULISSE_CM = 0.95
 DEGAGEMENT_PERCAGE_COULISSE_CM = 0.95
+# Cote fixe (mm) des percages embase (charniere/systeme32), qui ne
+# doivent PAS suivre le reglage 'Retrait facade' (percage32_retrait) --
+# ce dernier ne pilote que la position de la grille systeme 32.
+EMBASE_RETRAIT_FIXE_MM = 37.0
 
 
 def choisir_profondeur_caisson_tiroir_mm(profondeur_utile_mm, capacite_kg=30):
@@ -437,6 +441,35 @@ def normalized_portes_niches(values, col_idx, nb_niches):
     return out
 
 
+def _segments_fusionnes_si_cache(seg_starts, seg_ends, montant_centres,
+                                  retrait_montant, seuil_cm):
+    """Variante de la liste de segments (meme NOMBRE d'entrees, pour
+    garder la correspondance avec la config par colonne) ou chaque
+    segment s'ETEND individuellement pour couvrir tout montant
+    intermediaire ADJACENT suffisamment recule (retrait >= seuil,
+    typiquement l'epaisseur de la porte/facade) pour etre cache par
+    une porte/facade encastree qui passerait devant en continu -- les
+    2 segments voisins d'un montant cache s'etendent chacun jusqu'a
+    l'autre bord du montant (se chevauchant sur sa largeur, comme 2
+    facades qui se recouvrent legerement au niveau du joint). N'
+    affecte QUE la liste retournee (portes/tiroirs) : la vraie liste
+    'segments' (etageres, percage32...) reste inchangee, le montant
+    demeure une cloison physique reelle."""
+    starts = list(seg_starts)
+    ends = list(seg_ends)
+    if retrait_montant > seuil_cm:
+        # Meme limite que le mode En applique (portes_col_starts =
+        # [0.0] + montant_centres, portes_col_ends = montant_centres +
+        # [L]) : les 2 segments voisins d'un montant cache se
+        # rejoignent PILE au centre du montant, sans chevauchement.
+        for i, centre in enumerate(montant_centres):
+            if i < len(ends):
+                ends[i] = centre
+            if i + 1 < len(starts):
+                starts[i + 1] = centre
+    return [(a, b) for a, b in zip(starts, ends) if b > a]
+
+
 def _split_by_axes(low, high, axes, gap):
     # Decoupe l'intervalle [low, high] en tronçons separes par les positions
     # de 'axes' (ex. axes des etageres fixe d'une colonne), en appliquant
@@ -702,7 +735,26 @@ def compute_layout(values):
     P = mm_to_cm(values['profondeur'])
     Ep = mm_to_cm(values['ep_panneau'])
     Ef = mm_to_cm(values['ep_fond'])
-    Soc = mm_to_cm(values.get('socle', 0)) if values.get('socle_actif', True) else 0.0
+    # Epaisseur du fond de TIROIR : parametre distinct de celui du
+    # fond du CAISSON (Ef ci-dessus). Repli sur ep_fond si non fourni
+    # (retro-compatibilite avec un meuble existant sans ce champ).
+    Ef_tiroir = mm_to_cm(values.get('ep_fond_tiroir', values['ep_fond']))
+    # Epaisseur des panneaux du tiroir (cotes, traverses) : parametre
+    # distinct de celui des panneaux du CAISSON (Ep ci-dessus). Repli
+    # sur ep_panneau si non fourni (retro-compatibilite).
+    Ep_tiroir = mm_to_cm(values.get('ep_panneau_tiroir', values['ep_panneau']))
+    # Epaisseurs independantes des etageres fixes et mobiles (repli sur
+    # ep_panneau si non fournies).
+    Ep_etagere_fixe = mm_to_cm(values.get('ep_etagere_fixe', values['ep_panneau']))
+    Ep_etagere_mobile = mm_to_cm(values.get('ep_etagere_mobile', values['ep_panneau']))
+    retrait_etagere_fixe = mm_to_cm(values.get('retrait_etagere_fixe', 0))
+    # La coupe d'onglet (4 coins du caisson) n'est pas compatible avec
+    # le socle (le coin bas ne peut alors pas etre mitre proprement,
+    # voir compute_layout plus bas) : le socle est donc force inactif
+    # des que la coupe d'onglet est demandee.
+    _socle_actif_effectif = (
+        values.get('socle_actif', True) and not values.get('coupe_onglet', False))
+    Soc = mm_to_cm(values.get('socle', 0)) if _socle_actif_effectif else 0.0
     # La hauteur de socle ne doit pas augmenter la hauteur totale du meuble :
     # le socle mord sur la hauteur demandée (H) plutôt que de s'y ajouter. En
     # réduisant H ici, tout ce qui suit (caisson, portes, perçages Lamello...)
@@ -726,15 +778,62 @@ def compute_layout(values):
     panels = []  # (x0,x1,y0,y1,z_start,z_extent,name)
     grooves = []  # ('x', x_plane, sign, y0, y1, z0, z1, depth, name, target_panel_name)
     prises_main = []  # (axis, ...params..., name, target_panel_name)
+    miter_cuts = []  # (tri_xz, y0, y1, name, target_panel_name)
     holes = []  # ('X', x_plane, sign, y_center, z_center, diam, depth, name) ou ('Z', ...)
 
     # Les côtés (montants extérieurs) descendent de Soc sous le niveau z=0 du
     # caisson ; le dessous/dessus/fond restent inchangés.
+    coupe_onglet = bool(values.get('coupe_onglet', False))
     panels.append((0, Ep, 0, interior_depth, -Soc, H + Soc, 'Côté gauche', None))
     panels.append((L - Ep, L, 0, interior_depth, -Soc, H + Soc, 'Côté droit', None))
-    panels.append((Ep, L - Ep, 0, interior_depth, 0, Ep, 'Dessous', 'EpPanneau'))
-    panels.append((Ep, L - Ep, 0, interior_depth, H - Ep, Ep, 'Dessus', 'EpPanneau'))
-    panels.append((0, L, interior_depth, P, 0, H, 'Fond', None))
+    _dessous_x0, _dessous_x1 = (0, L) if coupe_onglet else (Ep, L - Ep)
+    _dessus_x0, _dessus_x1 = (0, L) if coupe_onglet else (Ep, L - Ep)
+    panels.append((_dessous_x0, _dessous_x1, 0, interior_depth, 0, Ep, 'Dessous', 'EpPanneau'))
+    panels.append((_dessus_x0, _dessus_x1, 0, interior_depth, H - Ep, Ep, 'Dessus', 'EpPanneau'))
+    if coupe_onglet:
+        # Coupe d'onglet 45 degres aux 4 coins du caisson principal
+        # (cotes exterieurs + Dessus/Dessous uniquement, pas les
+        # montants intermediaires ni le Fond/Plinthe). Chaque coin
+        # retire un prisme triangulaire complementaire sur le cote ET
+        # sur le dessus/dessous, sur toute la profondeur utile.
+        # Coin HAUT (toujours coherent, cote et dessus partagent le
+        # meme sommet Z=H quel que soit le socle) :
+        # Cote : le panneau lui-meme utilise H+Soc comme reference
+        # haute (voir sa creation juste au-dessus, z_extent=H+Soc) --
+        # la coupe doit utiliser la MEME reference, PAS le decalage
+        # +Soc applique plus bas (celui-ci ne s'applique qu'a
+        # Dessus/Dessous).
+        _H_cote = H + Soc
+        miter_cuts.append((
+            [(Ep, _H_cote - Ep), (Ep, _H_cote), (0, _H_cote)], 0, interior_depth,
+            'Côté gauche Onglet Haut', 'Côté gauche'))
+        miter_cuts.append((
+            [(0, H - Ep), (0, H), (Ep, H - Ep)], 0, interior_depth,
+            'Dessus Onglet Gauche', 'Dessus'))
+        miter_cuts.append((
+            [(L - Ep, _H_cote - Ep), (L - Ep, _H_cote), (L, _H_cote)], 0, interior_depth,
+            'Côté droit Onglet Haut', 'Côté droit'))
+        miter_cuts.append((
+            [(L, H - Ep), (L, H), (L - Ep, H - Ep)], 0, interior_depth,
+            'Dessus Onglet Droit', 'Dessus'))
+        # Coin BAS : seulement si le cote et le dessous partagent
+        # reellement le meme niveau bas (pas de socle qui decale le
+        # dessous vers le haut).
+        if abs(-Soc) < 0.01:
+            miter_cuts.append((
+                [(0, 0), (Ep, 0), (Ep, Ep)], 0, interior_depth,
+                'Côté gauche Onglet Bas', 'Côté gauche'))
+            miter_cuts.append((
+                [(0, 0), (0, Ep), (Ep, Ep)], 0, interior_depth,
+                'Dessous Onglet Gauche', 'Dessous'))
+            miter_cuts.append((
+                [(L, 0), (L - Ep, 0), (L - Ep, Ep)], 0, interior_depth,
+                'Côté droit Onglet Bas', 'Côté droit'))
+            miter_cuts.append((
+                [(L, 0), (L, Ep), (L - Ep, Ep)], 0, interior_depth,
+                'Dessous Onglet Droit', 'Dessous'))
+    if Ef > 0:
+        panels.append((0, L, interior_depth, P, 0, H, 'Fond', None))
 
     # --- Plinthe : panneau vertical qui passe sous le Dessous, entre les
     # montants droite/gauche, en épaisseur panneaux, reculé de la face avant
@@ -753,6 +852,11 @@ def compute_layout(values):
     # mesurée depuis l'extérieur du côté choisi comme référence. Calculés
     # avant les étagères pour pouvoir découper celles-ci de part et d'autre.
     nb_montants = values.get('nb_montants', 0)
+    retrait_montant = mm_to_cm(values.get('retrait_montant', 0))
+    # Epaisseur du montant intermediaire : parametre distinct de
+    # celui des panneaux du CAISSON (Ep). Repli sur ep_panneau si non
+    # fourni (retro-compatibilite).
+    Ep_montant = mm_to_cm(values.get('ep_montant', values['ep_panneau']))
     montant_centres = []  # centres (cm), triés ensuite pour découper les étagères
     if nb_montants > 0:
         montants_specs = values.get('montants', [])
@@ -768,16 +872,17 @@ def compute_layout(values):
             axe_cm = mm_to_cm(axe_mm)
             centre = axe_cm if ref != 'droite' else (L - axe_cm)
             montant_centres.append(centre)
-            panels.append((centre - Ep / 2.0, centre + Ep / 2.0, 0, interior_depth,
-                            interior_z0, interior_h, 'Montant intermédiaire {}'.format(i), None))
+            panels.append((centre - Ep_montant / 2.0, centre + Ep_montant / 2.0, retrait_montant,
+                            interior_depth, interior_z0, interior_h,
+                            'Montant intermédiaire {}'.format(i), None))
     montant_centres.sort()
 
     # Compartiments d'étagère (bornes gauche/droite de chaque bac délimité par
     # les côtés et les montants intermédiaires) : utilisés à la fois pour
     # découper les panneaux d'étagère et pour positionner le perçage système
     # 32, indépendamment du nombre d'étagères réellement posées.
-    seg_starts = [Ep] + [c + Ep / 2.0 for c in montant_centres]
-    seg_ends = [c - Ep / 2.0 for c in montant_centres] + [L - Ep]
+    seg_starts = [Ep] + [c + Ep_montant / 2.0 for c in montant_centres]
+    seg_ends = [c - Ep_montant / 2.0 for c in montant_centres] + [L - Ep]
     segments = [(s, e) for s, e in zip(seg_starts, seg_ends) if e > s]
     if not segments:
         raise MeubleLayoutError(
@@ -803,7 +908,9 @@ def compute_layout(values):
             j = bay_i + 1
             name_ef = ('Étagère fixe {}'.format(k) if len(segments) == 1
                        else 'Étagère fixe {} section {}'.format(k, j))
-            panels.append((seg_x0, seg_x1, 0, interior_depth, z_centre_ef - Ep / 2.0, Ep, name_ef, 'EpPanneau'))
+            panels.append((seg_x0, seg_x1, retrait_etagere_fixe, interior_depth,
+                           z_centre_ef - Ep_etagere_fixe / 2.0, Ep_etagere_fixe,
+                           name_ef, None))
 
     # --- Perçage système 32 : configuration PAR COLONNE (compartiment
     # d'étagère), une entrée de plus que le nombre de montants intermédiaires,
@@ -877,7 +984,7 @@ def compute_layout(values):
     for _bay_i in range(len(segments)):
         _col_ef = (etageres_fixes_colonnes_norm[_bay_i]
                    if _bay_i < len(etageres_fixes_colonnes_norm) else {'hauteurs': []})
-        _nbounds = niche_bounds_colonne(_col_ef, interior_z0, interior_z1, Ep)
+        _nbounds = niche_bounds_colonne(_col_ef, interior_z0, interior_z1, Ep_etagere_fixe)
         niches_bounds_par_colonne.append(_nbounds)
         _p32_niches = normalized_percage32_niches(values, _bay_i, len(_nbounds))
         percage32_niches_par_colonne.append(_p32_niches)
@@ -1004,7 +1111,7 @@ def compute_layout(values):
     if _tiroirs_mode_tot == 'encastre':
         _z0_tir_tot = Ep + _jeu_t_tot
         _z1_tir_tot = H - Ep - _jeu_t_tot
-        _gap_ef_tir_tot = Ep / 2.0 + _jeu_t_tot
+        _gap_ef_tir_tot = Ep_etagere_fixe / 2.0 + _jeu_t_tot
     else:
         _z0_tir_tot = _jeu_t_tot / 2.0
         _z1_tir_tot = H - _jeu_t_tot / 2.0
@@ -1017,7 +1124,7 @@ def compute_layout(values):
         if _tiroirs_mode_tot == 'applique':
             _v_slices_tot = _v_slices_facade_applique(
                 _z0_tir_tot, _z1_tir_tot, _axes_ef_tot,
-                actifs_niche_par_colonne[_bay_i], _jeu_t_tot, Ep)
+                actifs_niche_par_colonne[_bay_i], _jeu_t_tot, Ep_etagere_fixe)
         else:
             _v_slices_tot = _split_by_axes(_z0_tir_tot, _z1_tir_tot, _axes_ef_tot, _gap_ef_tir_tot)
         _ligne = []
@@ -1045,7 +1152,8 @@ def compute_layout(values):
                 continue  # pas d'etagere demandee, ou niche sans percage systeme 32
             niche_candidates = p32_niches_candidates[bay_i][niche_i]
             z_starts = compute_etagere_z_starts(
-                nb_etageres_niche, col_etageres['mode'], nz0, nz1 - nz0, Ep, niche_candidates)
+                nb_etageres_niche, col_etageres['mode'], nz0, nz1 - nz0,
+                Ep_etagere_mobile, niche_candidates)
             etageres_z_par_colonne[bay_i][niche_i] = list(z_starts)
             porte_encastree_ici = (portes_mode == 'encastre'
                                    and po_niches[niche_i].get('choix', 'off') != 'off')
@@ -1061,7 +1169,8 @@ def compute_layout(values):
                 suffixe = (' ' + ' '.join(parts)) if parts else ''
                 name = 'Étagère {}{}'.format(i, suffixe)
                 panels.append(
-                    (seg_x0, seg_x1, retrait_niche, interior_depth, z_start, Ep, name, 'EpPanneau'))
+                    (seg_x0, seg_x1, retrait_niche, interior_depth,
+                     z_start, Ep_etagere_mobile, name, None))
 
     # --- Option '3 Trous' (Percage 32, par niche) : masque tous les
     # trous du systeme 32 de cette niche SAUF ceux reellement utilises
@@ -1122,8 +1231,11 @@ def compute_layout(values):
     # physiques (pas d'axe partage avec la colonne voisine, contrairement
     # au mode applique).
     if portes_mode == 'encastre':
-        portes_col_starts = [s for s, _e in segments]
-        portes_col_ends = [e for _s, e in segments]
+        _ep_porte_cm = mm_to_cm(values.get('ep_porte', values['ep_panneau']))
+        _segments_portes = _segments_fusionnes_si_cache(
+            seg_starts, seg_ends, montant_centres, retrait_montant, _ep_porte_cm)
+        portes_col_starts = [s for s, _e in _segments_portes]
+        portes_col_ends = [e for _s, e in _segments_portes]
     else:
         portes_col_starts = [0.0] + montant_centres
         portes_col_ends = montant_centres + [L]
@@ -1169,6 +1281,17 @@ def compute_layout(values):
             # jeu complet partout, pas de partage possible.
             x0 = col_x0 + jeu_porte
             x1 = col_x1 - jeu_porte
+            # Recouvrement (montant/etagere fixe suffisamment recule) :
+            # si la colonne voisine n'a AUCUNE porte active, il n'y a
+            # pas de porte en face avec qui se partager le montant --
+            # cette porte doit alors couvrir tout le montant jusqu'a
+            # son bord exterieur (moins le jeu), pas seulement jusqu'a
+            # son centre.
+            if retrait_montant > _ep_porte_cm:
+                if bay_i > 0 and _colonne_sans_facade_active(bay_i - 1):
+                    x0 = (montant_centres[bay_i - 1] - Ep_montant / 2.0) + jeu_porte
+                if bay_i < len(segments) - 1 and _colonne_sans_facade_active(bay_i + 1):
+                    x1 = (montant_centres[bay_i] + Ep_montant / 2.0) - jeu_porte
         else:
             # Jeu peripherique complet contre un bord EXTERIEUR (cote du
             # caisson), mais moitie du jeu contre un axe de montant
@@ -1192,13 +1315,13 @@ def compute_layout(values):
             if bay_i == 0:
                 x0 = col_x0 + jeu_porte / 2.0
             elif gauche_off:
-                x0 = (montant_centres[bay_i - 1] - Ep / 2.0) + jeu_porte
+                x0 = (montant_centres[bay_i - 1] - Ep_montant / 2.0) + jeu_porte
             else:
                 x0 = col_x0 + jeu_porte / 2.0
             if bay_i == len(segments) - 1:
                 x1 = col_x1 - jeu_porte / 2.0
             elif droite_off:
-                x1 = (montant_centres[bay_i] + Ep / 2.0) - jeu_porte
+                x1 = (montant_centres[bay_i] + Ep_montant / 2.0) - jeu_porte
             else:
                 x1 = col_x1 - jeu_porte / 2.0
         if x1 <= x0:
@@ -1219,10 +1342,34 @@ def compute_layout(values):
         if portes_mode == 'applique':
             v_slices_par_niche = _v_slices_facade_applique(
                 z0_porte_zone, z1_porte_zone, axes_ef,
-                actifs_niche_par_colonne[bay_i], jeu_porte, Ep)
+                actifs_niche_par_colonne[bay_i], jeu_porte, Ep_etagere_fixe)
         else:
-            gap_ef = Ep / 2.0 + jeu_porte
+            gap_ef = Ep_etagere_fixe / 2.0 + jeu_porte
             v_slices_par_niche = _split_by_axes(z0_porte_zone, z1_porte_zone, axes_ef, gap_ef)
+            if axes_ef and len(v_slices_par_niche) == len(axes_ef) + 1:
+                _vs0 = [s for s, _e in v_slices_par_niche]
+                _vs1 = [e for _s, e in v_slices_par_niche]
+                v_slices_par_niche = _segments_fusionnes_si_cache(
+                    _vs0, _vs1, axes_ef, retrait_etagere_fixe, ep_porte)
+                # Idem montants : si la niche voisine (au-dessus ou
+                # en-dessous) n'a aucune porte active, cette porte doit
+                # couvrir toute l'etagere fixe jusqu'a son bord
+                # exterieur (moins le jeu), pas seulement son centre.
+                if retrait_etagere_fixe > ep_porte:
+                    _vsx0 = [s for s, _e in v_slices_par_niche]
+                    _vsx1 = [e for _s, e in v_slices_par_niche]
+                    for _ni in range(len(v_slices_par_niche)):
+                        _bas_off = (_ni > 0 and all(
+                            n.get('choix', 'off') == 'off'
+                            for n in [po_niches[_ni - 1]]))
+                        _haut_off = (_ni + 1 < len(v_slices_par_niche) and all(
+                            n.get('choix', 'off') == 'off'
+                            for n in [po_niches[_ni + 1]]))
+                        if _ni > 0 and _bas_off:
+                            _vsx0[_ni] = axes_ef[_ni - 1] - Ep_etagere_fixe / 2.0 + jeu_porte
+                        if _ni + 1 < len(v_slices_par_niche) and _haut_off:
+                            _vsx1[_ni] = axes_ef[_ni] + Ep_etagere_fixe / 2.0 - jeu_porte
+                    v_slices_par_niche = list(zip(_vsx0, _vsx1))
         for niche_i, _slice in enumerate(v_slices_par_niche):
             if _slice is None:
                 continue
@@ -1346,8 +1493,13 @@ def compute_layout(values):
                                   if bay_i < len(percage32_niches_par_colonne)
                                   and niche_i < len(percage32_niches_par_colonne[bay_i])
                                   else {'systeme': 'off'})
-                if _p32_niche_ici.get('systeme', 'off') == 'off':
-                    _retrait_p32_ici = mm_to_cm(values.get('percage32_retrait', 37))
+                if (_p32_niche_ici.get('systeme', 'off') == 'off'
+                        and values.get('portes_montage_embase', 'eurovis') != 'off'):
+                    # Cote FIXE (37mm), independante du reglage
+                    # 'Retrait facade' (percage32_retrait) : ce dernier
+                    # ne pilote que la grille systeme 32, pas les
+                    # percages embase.
+                    _retrait_p32_ici = mm_to_cm(EMBASE_RETRAIT_FIXE_MM)
                     _x_plane_embase = _seg[0] if sens == 'gauche' else _seg[1]
                     _sign_embase = -1 if sens == 'gauche' else 1
                     # Profondeur d'embase : 'a visser' = toujours 1mm ;
@@ -1383,11 +1535,16 @@ def compute_layout(values):
     jeu_t = mm_to_cm(values.get('jeu_tiroir', 2))
     ep_face = mm_to_cm(values.get('ep_face_tiroir', values['ep_panneau']))
     if tiroirs_mode == 'encastre':
-        tiroir_col_starts = [s for s, _e in segments]
-        tiroir_col_ends = [e for _s, e in segments]
+        _ep_face_tiroir_cm = mm_to_cm(values.get('ep_face_tiroir', values['ep_panneau']))
+        _decalage_prof_cm = mm_to_cm(values.get('retrait_percage_coulisse', 0))
+        _segments_tiroirs = _segments_fusionnes_si_cache(
+            seg_starts, seg_ends, montant_centres, retrait_montant,
+            _ep_face_tiroir_cm + _decalage_prof_cm)
+        tiroir_col_starts = [s for s, _e in _segments_tiroirs]
+        tiroir_col_ends = [e for _s, e in _segments_tiroirs]
         z0_tiroir_zone = Ep + jeu_t
         z1_tiroir_zone = H - Ep - jeu_t
-        gap_ef_t = Ep / 2.0 + jeu_t
+        gap_ef_t = Ep_etagere_fixe / 2.0 + jeu_t
     else:
         tiroir_col_starts = [0.0] + montant_centres
         tiroir_col_ends = montant_centres + [L]
@@ -1404,6 +1561,15 @@ def compute_layout(values):
         if tiroirs_mode == 'encastre':
             x0 = col_x0 + jeu_t
             x1 = col_x1 - jeu_t
+            # Recouvrement : meme principe que pour les Portes -- si la
+            # colonne voisine n'a aucune facade active, cette facade
+            # doit couvrir tout le montant jusqu'a son bord exterieur
+            # (moins le jeu).
+            if retrait_montant > (_ep_face_tiroir_cm + _decalage_prof_cm):
+                if bay_i > 0 and _colonne_sans_facade_active(bay_i - 1):
+                    x0 = (montant_centres[bay_i - 1] - Ep_montant / 2.0) + jeu_t
+                if bay_i < len(segments) - 1 and _colonne_sans_facade_active(bay_i + 1):
+                    x1 = (montant_centres[bay_i] + Ep_montant / 2.0) - jeu_t
         else:
             # Meme principe que pour les Portes : jeu complet contre un
             # bord EXTERIEUR ou un montant dont l'autre colonne n'a AUCUNE
@@ -1413,13 +1579,13 @@ def compute_layout(values):
             if bay_i == 0:
                 x0 = col_x0 + jeu_t / 2.0
             elif gauche_off:
-                x0 = (montant_centres[bay_i - 1] - Ep / 2.0) + jeu_t
+                x0 = (montant_centres[bay_i - 1] - Ep_montant / 2.0) + jeu_t
             else:
                 x0 = col_x0 + jeu_t / 2.0
             if bay_i == len(segments) - 1:
                 x1 = col_x1 - jeu_t / 2.0
             elif droite_off:
-                x1 = (montant_centres[bay_i] + Ep / 2.0) - jeu_t
+                x1 = (montant_centres[bay_i] + Ep_montant / 2.0) - jeu_t
             else:
                 x1 = col_x1 - jeu_t / 2.0
         if x1 <= x0:
@@ -1433,9 +1599,29 @@ def compute_layout(values):
         if tiroirs_mode == 'applique':
             v_slices_par_niche = _v_slices_facade_applique(
                 z0_tiroir_zone, z1_tiroir_zone, axes_ef,
-                actifs_niche_par_colonne[bay_i], jeu_t, Ep)
+                actifs_niche_par_colonne[bay_i], jeu_t, Ep_etagere_fixe)
         else:
             v_slices_par_niche = _split_by_axes(z0_tiroir_zone, z1_tiroir_zone, axes_ef, gap_ef_t)
+            if axes_ef and len(v_slices_par_niche) == len(axes_ef) + 1:
+                _vs0t = [s for s, _e in v_slices_par_niche]
+                _vs1t = [e for _s, e in v_slices_par_niche]
+                v_slices_par_niche = _segments_fusionnes_si_cache(
+                    _vs0t, _vs1t, axes_ef, retrait_etagere_fixe,
+                    ep_face + mm_to_cm(values.get('retrait_percage_coulisse', 0)))
+                _seuil_tf = ep_face + mm_to_cm(values.get('retrait_percage_coulisse', 0))
+                if retrait_etagere_fixe > _seuil_tf:
+                    _vtx0 = [s for s, _e in v_slices_par_niche]
+                    _vtx1 = [e for _s, e in v_slices_par_niche]
+                    for _ni in range(len(v_slices_par_niche)):
+                        _bas_off_t = (_ni > 0 and int(
+                            tir_niches[_ni - 1].get('nb_tiroirs', 0) or 0) <= 0)
+                        _haut_off_t = (_ni + 1 < len(v_slices_par_niche) and int(
+                            tir_niches[_ni + 1].get('nb_tiroirs', 0) or 0) <= 0)
+                        if _ni > 0 and _bas_off_t:
+                            _vtx0[_ni] = axes_ef[_ni - 1] - Ep_etagere_fixe / 2.0 + jeu_t
+                        if _ni + 1 < len(v_slices_par_niche) and _haut_off_t:
+                            _vtx1[_ni] = axes_ef[_ni] + Ep_etagere_fixe / 2.0 - jeu_t
+                    v_slices_par_niche = list(zip(_vtx0, _vtx1))
         seg_x0, seg_x1 = _seg
         for niche_i, _slice in enumerate(v_slices_par_niche):
             if _slice is None:
@@ -1494,11 +1680,11 @@ def compute_layout(values):
             if niche_i == len(v_slices_par_niche) - 1:
                 support_haut = interior_z1
             else:
-                support_haut = axes_ef[niche_i] - Ep / 2.0
+                support_haut = axes_ef[niche_i] - Ep_etagere_fixe / 2.0
             if niche_i == 0:
                 support_bas = interior_z0
             else:
-                support_bas = axes_ef[niche_i - 1] + Ep / 2.0
+                support_bas = axes_ef[niche_i - 1] + Ep_etagere_fixe / 2.0
             # Pre-passe : hauteur de cote/fond-arriere individuelle de
             # chaque tiroir de CETTE niche (meme formules que plus bas),
             # pour en tirer le minimum -- simplifie la fabrication en
@@ -1521,11 +1707,11 @@ def compute_layout(values):
             _side_h_par_tiroir = []
             for _k in range(nb_t):
                 _face_z0, _face_z1 = face_bounds[_k]
-                if _k == k_haut_physique and nb_t > 1 and k_haut_touche_bord:
+                if _k == k_haut_physique and k_haut_touche_bord:
                     _cote_top = support_haut - MARGE_HAUT_COTE_CM
                 else:
                     _cote_top = _face_z1 - MARGE_HAUT_COTE_CM
-                if _k == k_bas_physique and nb_t > 1 and k_bas_touche_bord:
+                if _k == k_bas_physique and k_bas_touche_bord:
                     _fond_z0 = support_bas + DEGAGEMENT_TIROIR_BAS_CM
                 else:
                     _fond_z0 = _face_z0 + DEGAGEMENT_TIROIR_BAS_CM
@@ -1574,8 +1760,8 @@ def compute_layout(values):
                 # LARGEUR_COULISSE_CM se mesure jusqu'a la face INTERIEURE
                 # (rainuree) du cote, pas sa face exterieure : on retranche
                 # donc Ep pour positionner la face exterieure (drawer_x0).
-                drawer_x0 = seg_x0 + LARGEUR_COULISSE_CM - Ep
-                drawer_x1 = seg_x1 - LARGEUR_COULISSE_CM + Ep
+                drawer_x0 = seg_x0 + LARGEUR_COULISSE_CM - Ep_tiroir
+                drawer_x1 = seg_x1 - LARGEUR_COULISSE_CM + Ep_tiroir
                 # Profondeur utile REELLE entre le dos de la facade et le
                 # fond du meuble (moins 5mm de marge), arrondie a la plus
                 # grande longueur de coulisse Tandem Blum qui y tient ; le
@@ -1608,7 +1794,7 @@ def compute_layout(values):
                 # qui la borde en haut), meme s'il est plus proche/loin que
                 # sa facade.
                 est_dernier_tiroir = k == k_haut_physique
-                if est_dernier_tiroir and nb_t > 1 and k_haut_touche_bord:
+                if est_dernier_tiroir and k_haut_touche_bord:
                     cote_top = support_haut - MARGE_HAUT_COTE_CM
                 else:
                     cote_top = face_z1 - MARGE_HAUT_COTE_CM
@@ -1624,7 +1810,7 @@ def compute_layout(values):
                 # rainure (comme dans le cas normal), sous peine de
                 # decalage de la rainure par rapport au cote.
                 est_premier_tiroir = k == k_bas_physique
-                if est_premier_tiroir and nb_t > 1 and k_bas_touche_bord:
+                if est_premier_tiroir and k_bas_touche_bord:
                     fond_z0_override = support_bas + DEGAGEMENT_TIROIR_BAS_CM
                 else:
                     # Meme regle que le cas special (28,5mm), mais mesuree
@@ -1642,14 +1828,14 @@ def compute_layout(values):
                 if drawer_x1 > drawer_x0:
                     nom_cote_g = name.replace('Façade', 'Côté G')
                     nom_cote_d = name.replace('Façade', 'Côté D')
-                    panels.append((drawer_x0, drawer_x0 + Ep, box_y0, box_y0 + drawer_depth_total,
+                    panels.append((drawer_x0, drawer_x0 + Ep_tiroir, box_y0, box_y0 + drawer_depth_total,
                                    side_z0, side_h, nom_cote_g, None))
-                    panels.append((drawer_x1 - Ep, drawer_x1, box_y0, box_y0 + drawer_depth_total,
+                    panels.append((drawer_x1 - Ep_tiroir, drawer_x1, box_y0, box_y0 + drawer_depth_total,
                                    side_z0, side_h, nom_cote_d, None))
                     # Fond capte dans une rainure de chaque cote (coulisses
                     # invisibles sous caisse) : degagement DEGAGEMENT_COULISSE_CM
                     # au-dessus du bas des cotes, rainure haute et profonde de
-                    # Ef (ajustement exact), traversante sur toute la
+                    # Ef_tiroir (ajustement exact), traversante sur toute la
                     # profondeur, usinee depuis la face interieure de chaque
                     # cote vers l'exterieur (voir cut_groove_x).
                     fond_z0 = fond_z0_override
@@ -1699,23 +1885,23 @@ def compute_layout(values):
                     # (marge sous leur propre haut). Remplacent l'ancien
                     # panneau arriere pleine hauteur (voir modele de
                     # reference 'Tiroir').
-                    traverse_z0 = fond_z0 + Ef
+                    traverse_z0 = fond_z0 + Ef_tiroir
                     traverse_z1 = (side_z0 + side_h) - 0.5
                     traverse_h = max(traverse_z1 - traverse_z0, 0.5)
-                    panels.append((drawer_x0 + Ep, drawer_x1 - Ep, box_y0, box_y0 + Ep,
+                    panels.append((drawer_x0 + Ep_tiroir, drawer_x1 - Ep_tiroir, box_y0, box_y0 + Ep_tiroir,
                                    traverse_z0, traverse_h,
                                    name.replace('Façade', 'Traverse avant'), None))
-                    panels.append((drawer_x0 + Ep, drawer_x1 - Ep,
-                                   box_y0 + drawer_depth_total - Ep, box_y0 + drawer_depth_total,
+                    panels.append((drawer_x0 + Ep_tiroir, drawer_x1 - Ep_tiroir,
+                                   box_y0 + drawer_depth_total - Ep_tiroir, box_y0 + drawer_depth_total,
                                    traverse_z0, traverse_h,
                                    name.replace('Façade', 'Traverse arrière'), None))
-                    panels.append((drawer_x0 + Ep - Ef, drawer_x1 - Ep + Ef,
+                    panels.append((drawer_x0 + Ep_tiroir - Ef_tiroir, drawer_x1 - Ep_tiroir + Ef_tiroir,
                                    box_y0, box_y0 + drawer_depth_total,
-                                   fond_z0, Ef, name.replace('Façade', 'Fond bas'), 'EpFond'))
-                    grooves.append(('x', drawer_x0 + Ep, -1, box_y0, box_y0 + drawer_depth_total,
-                                    fond_z0, fond_z0 + Ef, Ef, nom_cote_g + ' Rainure', nom_cote_g))
-                    grooves.append(('x', drawer_x1 - Ep, 1, box_y0, box_y0 + drawer_depth_total,
-                                    fond_z0, fond_z0 + Ef, Ef, nom_cote_d + ' Rainure', nom_cote_d))
+                                   fond_z0, Ef_tiroir, name.replace('Façade', 'Fond bas'), 'EpFond'))
+                    grooves.append(('x', drawer_x0 + Ep_tiroir, -1, box_y0, box_y0 + drawer_depth_total,
+                                    fond_z0, fond_z0 + Ef_tiroir, Ef_tiroir, nom_cote_g + ' Rainure', nom_cote_g))
+                    grooves.append(('x', drawer_x1 - Ep_tiroir, 1, box_y0, box_y0 + drawer_depth_total,
+                                    fond_z0, fond_z0 + Ef_tiroir, Ef_tiroir, nom_cote_d + ' Rainure', nom_cote_d))
                     # Masque automatiquement tout le percage systeme 32/64
                     # de cette colonne sur la hauteur occupee par ce tiroir
                     # (un tiroir prend la place, les trous n'y servent a
@@ -1763,6 +1949,21 @@ def compute_layout(values):
                            'Lamello Montant D-Dessous {}'.format(tag)))
             holes.append(('X', L - Ep, 1, y_center, H - Ep / 2.0, diam_lamello, depth_lamello,
                            'Lamello Montant D-Dessus {}'.format(tag)))
+        # Montants intermediaires : memes positions AVANT/arriere,
+        # mais decalees du retrait_montant (ces montants ne
+        # commencent pas forcement a Y=0 comme les cotes exterieurs).
+        front_margin_mi = retrait_montant + Ep / 2.0
+        front_decale_mi = min(front_margin_mi + decale, back_margin)
+        back_decale_mi = max(back_margin - decale, front_margin_mi)
+        positions_mi = []
+        seen_mi = set()
+        for y_center, tag in ((front_margin_mi, 'avant'), (front_decale_mi, 'avant décalé'),
+                               (back_decale_mi, 'arrière décalé'), (back_margin, 'arrière')):
+            key = round(y_center, 4)
+            if key not in seen_mi:
+                seen_mi.add(key)
+                positions_mi.append((y_center, tag))
+        for y_center, tag in positions_mi:
             for mi, centre in enumerate(montant_centres, start=1):
                 holes.append(('Z', Ep, -1, centre, y_center, diam_lamello, depth_lamello,
                                'Lamello Montant Inter {} Dessous {}'.format(mi, tag)))
@@ -1779,6 +1980,19 @@ def compute_layout(values):
         # du panneau.
         marge_lamello_cm = mm_to_cm(LAMELLO_MARGE_SECURITE_MM)
         depth_lamello_partage = max(0.0, min(depth_lamello, (Ep - marge_lamello_cm) / 2.0))
+        # Positions AVANT/arriere decalees du retrait_etagere_fixe
+        # (memes principes que pour les montants intermediaires).
+        front_margin_ef = retrait_etagere_fixe + Ep / 2.0
+        front_decale_ef = min(front_margin_ef + decale, back_margin)
+        back_decale_ef = max(back_margin - decale, front_margin_ef)
+        positions_ef = []
+        seen_ef = set()
+        for y_center, tag in ((front_margin_ef, 'avant'), (front_decale_ef, 'avant décalé'),
+                               (back_decale_ef, 'arrière décalé'), (back_margin, 'arrière')):
+            key = round(y_center, 4)
+            if key not in seen_ef:
+                seen_ef.add(key)
+                positions_ef.append((y_center, tag))
         nb_segments_ef = len(segments)
         for bay_i, (seg_x0, seg_x1) in enumerate(segments):
             col_ef = (etageres_fixes_colonnes_norm[bay_i]
@@ -1787,7 +2001,7 @@ def compute_layout(values):
             depth_droite_ef = depth_lamello if bay_i == nb_segments_ef - 1 else depth_lamello_partage
             for k, hauteur_mm in enumerate(col_ef['hauteurs'], start=1):
                 z_centre_ef = mm_to_cm(hauteur_mm)
-                for y_center, tag in positions:
+                for y_center, tag in positions_ef:
                     if depth_gauche_ef > 0:
                         holes.append(('X', seg_x0, -1, y_center, z_centre_ef, diam_lamello, depth_gauche_ef,
                                        'Lamello Étagère fixe {} Compart {} Gauche {}'.format(
@@ -1852,8 +2066,13 @@ def compute_layout(values):
             # ET seulement sur la face du montant/cote ou se trouve
             # REELLEMENT cette charniere (pas les deux faces).
             extra_side = (p32_extra_side_only[bay_i]
-                          if bay_i < len(p32_extra_side_only) else {})
-            y_avant = retrait_p32
+                          if bay_i < len(p32_extra_side_only)
+                          and values.get('portes_montage_embase', 'eurovis') != 'off'
+                          else {})
+            # Cote FIXE (37mm) pour les percages embase, comme les
+            # trous 'systeme off' : independante du reglage 'Retrait
+            # facade' (percage32_retrait).
+            y_avant = mm_to_cm(EMBASE_RETRAIT_FIXE_MM)
             # Profondeur specifique aux trous d'embase (differente de
             # depth_gauche/depth_droite, qui est celle des trous
             # systeme 32 normaux) : 'a visser' = toujours 1mm ; 'Eurovis'
@@ -1932,5 +2151,16 @@ def compute_layout(values):
                     ('z', z_plane + Soc, hauteur, y_front, x_edge, sens, name, target))
         prises_main = shifted_pm
 
+        # Coupes d'onglet : seules celles ciblant Dessus/Dessous
+        # doivent suivre le decalage +Soc (ces panneaux SONT decales
+        # plus haut) ; celles ciblant les Cotes restent inchangees
+        # (les cotes sont deja positionnes en coordonnees finales).
+        shifted_mc = []
+        for tri_xz, y0_mc, y1_mc, mc_name, mc_target in miter_cuts:
+            if mc_target in ('Dessus', 'Dessous'):
+                tri_xz = [(x, z + Soc) for x, z in tri_xz]
+            shifted_mc.append((tri_xz, y0_mc, y1_mc, mc_name, mc_target))
+        miter_cuts = shifted_mc
+
     return {'panels': panels, 'doors': doors, 'holes': holes, 'grooves': grooves,
-            'prises_main': prises_main, 'L': L, 'H': H, 'P': P}
+            'prises_main': prises_main, 'miter_cuts': miter_cuts, 'L': L, 'H': H, 'P': P}
