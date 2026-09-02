@@ -58,6 +58,13 @@ coupeToggleEl.addEventListener('click', function() {
   coupeActive = !coupeActive;
   coupeToggleEl.classList.toggle('actif', coupeActive);
   coupeSliderEl.disabled = !coupeActive;
+  if (coupeActive) {
+    coupeSliderEl.value = 0;
+    if (derniereDonnees) {
+      var vv = VUES[vueActuelle];
+      coupeValEl.textContent = vv.coupeNom + ' : 0 mm';
+    }
+  }
   if (derniereDonnees) dessiner(derniereDonnees);
 });
 coupeSliderEl.addEventListener('input', function() {
@@ -95,7 +102,7 @@ function dessiner(donnees) {
     var maxCoupe = donnees[v.coupeMaxCle] || 500;
     coupeSliderEl.min = 0;
     coupeSliderEl.max = maxCoupe;
-    coupeSliderEl.value = maxCoupe / 2;
+    coupeSliderEl.value = 0;
     coupeValEl.textContent = v.coupeNom + ' : ' + Math.round(parseFloat(coupeSliderEl.value)) + ' mm';
     vueChangee = false;
   }
