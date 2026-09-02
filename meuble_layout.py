@@ -90,6 +90,10 @@ TANDEM_BLUM_PERCAGES_MM = {
 DIAM_PERCAGE_COULISSE_CM = 0.5
 PROFONDEUR_PERCAGE_COULISSE_CM = 0.95
 DEGAGEMENT_PERCAGE_COULISSE_CM = 0.95
+# Cote fixe (mm) des percages embase (charniere/systeme32), qui ne
+# doivent PAS suivre le reglage 'Retrait facade' (percage32_retrait) --
+# ce dernier ne pilote que la position de la grille systeme 32.
+EMBASE_RETRAIT_FIXE_MM = 37.0
 
 
 def choisir_profondeur_caisson_tiroir_mm(profondeur_utile_mm, capacite_kg=30):
@@ -1491,7 +1495,11 @@ def compute_layout(values):
                                   else {'systeme': 'off'})
                 if (_p32_niche_ici.get('systeme', 'off') == 'off'
                         and values.get('portes_montage_embase', 'eurovis') != 'off'):
-                    _retrait_p32_ici = mm_to_cm(values.get('percage32_retrait', 37))
+                    # Cote FIXE (37mm), independante du reglage
+                    # 'Retrait facade' (percage32_retrait) : ce dernier
+                    # ne pilote que la grille systeme 32, pas les
+                    # percages embase.
+                    _retrait_p32_ici = mm_to_cm(EMBASE_RETRAIT_FIXE_MM)
                     _x_plane_embase = _seg[0] if sens == 'gauche' else _seg[1]
                     _sign_embase = -1 if sens == 'gauche' else 1
                     # Profondeur d'embase : 'a visser' = toujours 1mm ;
@@ -2061,7 +2069,10 @@ def compute_layout(values):
                           if bay_i < len(p32_extra_side_only)
                           and values.get('portes_montage_embase', 'eurovis') != 'off'
                           else {})
-            y_avant = retrait_p32
+            # Cote FIXE (37mm) pour les percages embase, comme les
+            # trous 'systeme off' : independante du reglage 'Retrait
+            # facade' (percage32_retrait).
+            y_avant = mm_to_cm(EMBASE_RETRAIT_FIXE_MM)
             # Profondeur specifique aux trous d'embase (differente de
             # depth_gauche/depth_droite, qui est celle des trous
             # systeme 32 normaux) : 'a visser' = toujours 1mm ; 'Eurovis'

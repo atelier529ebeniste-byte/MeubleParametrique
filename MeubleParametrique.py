@@ -4,12 +4,13 @@ import datetime
 import json
 import os
 import re
+import time
 import traceback
 
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.12'
+ADDIN_VERSION = '1.15'
 
 app = None
 ui = None
@@ -17,7 +18,18 @@ handlers = []
 
 # Dossier contenant ce fichier .py, pour retrouver le dossier resources/ à côté
 SCRIPT_DIR = os.path.dirname(os.path.realpath(__file__))
+
+# Aperçu SVG live (Palette HTML) : id et chemin du fichier html,
+# conserves tant que l'add-in tourne (necessaire pour retrouver/fermer
+# la palette entre deux ouvertures du dialogue).
+APERCU_PALETTE_ID = 'meubleApercuPaletteFinal'
+# Chemin avec des '/' (pas des '\\') : Palettes.add construit une URL
+# file:// a partir de cette chaine, et des antislashs Windows non
+# convertis produisent une URL invalide (ERR_INVALID_URL).
+APERCU_HTML_PATH = os.path.join(SCRIPT_DIR, 'apercu_meuble.html').replace('\\', '/')
+apercu_handlers = []
 RESOURCE_FOLDER_REFRESH = os.path.join(SCRIPT_DIR, 'resources', 'Refresh')
+RESOURCE_FOLDER_APERCU = os.path.join(SCRIPT_DIR, 'resources', 'Apercu')
 RESOURCE_FOLDER_SAVE_DEFAULT = os.path.join(SCRIPT_DIR, 'resources', 'EnregistrerDefaut')
 RESOURCE_FOLDER_MEUBLE = os.path.join(SCRIPT_DIR, 'resources', 'MeubleParametrique')
 RESOURCE_FOLDER_APPLIQUER = os.path.join(SCRIPT_DIR, 'resources', 'Appliquer')
@@ -2141,6 +2153,8 @@ def add_meuble_fields(inputs, cur_mm_func):
     # un volet rabattable), mais ne réagissait pas au clic dans Fusion, y
     # compris une fois converti en case à cocher classique : le bouton
     # Rafraîchir reste donc unique, ici, comme avant.
+    inputs.addBoolValueInput(
+        'buttonApercu', 'Aperçu', False, RESOURCE_FOLDER_APERCU, False)
     inputs.addBoolValueInput('buttonRafraichir', 'Rafraîchir',
                               False, RESOURCE_FOLDER_REFRESH, False)
     inputs.addBoolValueInput('buttonEnregistrerDefaut', 'Enregistrer par défaut',
@@ -2165,6 +2179,92 @@ def add_meuble_fields(inputs, cur_mm_func):
             "Scripts et compléments (ou Maj+S) > MeubleParametrique > "
             "Arrêter > Exécuter (ou redémarrer Fusion 360).",
             6, True)
+
+
+def _copie_apercu_html_unique():
+    """Copie apercu_meuble.html sous un nom unique (horodate) dans un
+    sous-dossier temporaire, et renvoie son chemin (avec des '/').
+    Necessaire car Fusion rejette les suffixes ?/# anti-cache sur une
+    url de fichier local, et re-attribuer la MEME url ne recharge pas
+    le contenu si le navigateur interne l'a deja en cache. Nettoie
+    aussi les anciennes copies pour ne pas accumuler de fichiers."""
+    import shutil
+    dossier_tmp = os.path.join(SCRIPT_DIR, '_apercu_tmp')
+    os.makedirs(dossier_tmp, exist_ok=True)
+    for _f in os.listdir(dossier_tmp):
+        try:
+            os.remove(os.path.join(dossier_tmp, _f))
+        except Exception:
+            pass
+    nom_unique = 'apercu_{}.html'.format(int(time.time() * 1000))
+    dest = os.path.join(dossier_tmp, nom_unique)
+    shutil.copy2(os.path.join(SCRIPT_DIR, 'apercu_meuble.html'), dest)
+    return dest.replace(os.sep, '/')
+
+
+def _panneaux_vue_face(layout):
+    """Convertit layout['panels'] + layout['doors'] en une liste de
+    volumes 2D+profondeur (x0,x1,y0,y1,z0,z1 en mm) pour les 3 vues de
+    l'aperçu SVG (face/cote/dessus). Chaque entree : type
+    ('panneau'/'porte'/'tiroir'/'etagere'), nom, sens eventuel.
+    Tolerant : une entree individuelle mal formee est simplement
+    ignoree plutot que de faire echouer tout l'apercu."""
+    rects = []
+    for p in layout.get('panels', []):
+        try:
+            if p[0] == 'XZ':
+                _, x0, x1, z0, z1, y0, yext, nom = p[:8]
+                y1 = y0 + yext
+            else:
+                x0, x1, y0, y1, z0, zext, nom = p[:7]
+                z1 = z0 + zext
+            if 'Étagère' in nom:
+                typ = 'etagere'
+            elif 'Façade' in nom:
+                typ = 'tiroir'
+            else:
+                typ = 'panneau'
+            rects.append({
+                'x0': cm_to_mm(x0), 'x1': cm_to_mm(x1),
+                'y0': cm_to_mm(y0), 'y1': cm_to_mm(y1),
+                'z0': cm_to_mm(z0), 'z1': cm_to_mm(z1),
+                'type': typ, 'nom': nom})
+        except Exception:
+            continue
+    for d in layout.get('doors', []):
+        try:
+            x0, z0, largeur, hauteur, ep, sens = d[0], d[1], d[2], d[3], d[4], d[5]
+            rects.append({
+                'x0': cm_to_mm(x0), 'x1': cm_to_mm(x0 + largeur),
+                'y0': 0.0, 'y1': cm_to_mm(ep),
+                'z0': cm_to_mm(z0), 'z1': cm_to_mm(z0 + hauteur),
+                'type': 'porte', 'nom': 'Porte', 'sens': sens})
+        except Exception:
+            continue
+    return rects
+
+
+def update_apercu(inputs):
+    """Recalcule le meuble a partir de l'etat ACTUEL du dialogue et
+    envoie une vue de face simplifiee (SVG) a la palette d'apercu, si
+    elle est ouverte. Echoue silencieusement (dialogue incomplet,
+    palette fermee, etc.) sans jamais interrompre le reste du
+    dialogue."""
+    try:
+        pal = ui.palettes.itemById(APERCU_PALETTE_ID) if ui else None
+        if not pal or not pal.isVisible:
+            return
+        values = collect_values_mm(inputs)
+        layout = compute_layout(values)
+        donnees = {
+            'L_mm': values.get('largeur', 0),
+            'H_mm': values.get('hauteur', 0),
+            'P_mm': values.get('profondeur', 0),
+            'panneaux': _panneaux_vue_face(layout),
+        }
+        pal.sendInfoToHTML('apercu', json.dumps(donnees))
+    except Exception:
+        pass
 
 
 def collect_values_mm(inputs):
@@ -2388,7 +2488,7 @@ def update_field_visibility(inputs):
 # memoire pour CETTE session ne peut pas etre change a chaud).
 UPDATE_FILES = (
     'MeubleParametrique.py', 'meuble_layout.py', 'meuble_geometry.py',
-    'meuble_persistence.py')
+    'meuble_persistence.py', 'apercu_meuble.html')
 
 
 def _extract_version(file_path):
@@ -2453,6 +2553,7 @@ def _check_and_apply_updates_drive():
                 continue
             if (not os.path.isfile(dst)
                     or os.path.getmtime(src) > os.path.getmtime(dst) + 1.0):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(src, dst)
                 updated.append(fname)
         except Exception:
@@ -2491,6 +2592,7 @@ def _check_and_apply_updates_github():
                 continue
             deja_synchro = etat.get(fname) == etag_distant
             if not deja_synchro:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
                 with open(dst, 'wb') as f:
                     f.write(distant)
                 etat[fname] = etag_distant
@@ -2673,8 +2775,33 @@ class CreateInputChangedHandler(adsk.core.InputChangedEventHandler):
                 # bas de la boîte de dialogue) ou par un changement réel du
                 # Nombre de montants.
                 refresh_computed_fields(full_inputs)
+                update_apercu(full_inputs)
             elif args.input.id == 'buttonEnregistrerDefaut':
                 save_current_as_default(full_inputs)
+            elif args.input.id == 'buttonApercu':
+                pal = ui.palettes.itemById(APERCU_PALETTE_ID)
+                if not pal:
+                    pal = ui.palettes.add(
+                        APERCU_PALETTE_ID, 'Aperçu meuble', APERCU_HTML_PATH,
+                        True, True, True, 420, 560)
+                    pal.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateRight
+                # Ne JAMAIS reassigner htmlFileURL apres la creation
+                # (constate : rend la palette vide, que ce soit juste
+                # apres la creation ou lors d'une reouverture). La
+                # page reste donc chargee UNE fois pour toute la
+                # session Fusion ; seules les DONNEES sont rafraichies
+                # via update_apercu (sendInfoToHTML), ce qui suffit
+                # pour l'usage normal. Un redemarrage complet de
+                # Fusion est necessaire pour reprendre une eventuelle
+                # modification du fichier apercu_meuble.html lui-meme.
+                if pal.isVisible:
+                    pal.isVisible = False
+                else:
+                    pal.isVisible = True
+                    update_apercu(full_inputs)
+                _btn_apercu = full_inputs.itemById('buttonApercu')
+                if _btn_apercu and _btn_apercu.value:
+                    _btn_apercu.value = False
             elif args.input.id == 'checkPresetSaveAs':
                 save_current_preset(full_inputs)
             elif args.input.id == 'checkPresetDelete':
