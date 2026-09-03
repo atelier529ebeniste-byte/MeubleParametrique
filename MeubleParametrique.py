@@ -10,7 +10,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.18'
+ADDIN_VERSION = '1.28'
 
 app = None
 ui = None
@@ -360,7 +360,7 @@ def apply_meuble_selection(inputs, override_values=None):
         ci = inputs.itemById(field_id)
         if ci and key in values:
             ci.value = int(values[key])
-    tab_m = inputs.itemById('tabMontants')
+    group_axe_m = inputs.itemById('groupAxeMontants')
     dd_mode_m = inputs.itemById('dropdownMontantsMode')
     if dd_mode_m:
         mode_label = {'axe_egal': 'Axe égal',
@@ -369,9 +369,9 @@ def apply_meuble_selection(inputs, override_values=None):
             values.get('montants_mode', 'axe_egal'), 'Axe égal')
         for li in dd_mode_m.listItems:
             li.isSelected = (li.name == mode_label)
-    if tab_m:
+    if group_axe_m:
         rebuild_montant_axis_fields(
-            tab_m.children, values.get('nb_montants', 1),
+            group_axe_m.children, values.get('nb_montants', 1),
             values.get('largeur', 1000), values.get('montants'),
             values.get('montants_mode', 'axe_egal'), values.get('ep_panneau', 19))
     nb_colonnes = values.get('nb_montants', 1) + 1
@@ -400,7 +400,8 @@ def apply_meuble_selection(inputs, override_values=None):
     if group_etageres:
         rebuild_etageres_tables(
             group_etageres.children, nb_colonnes,
-            values.get('etageres_colonnes'), inputs=inputs)
+            values.get('etageres_colonnes'), inputs=inputs,
+            tiroirs_colonnes=values.get('tiroirs_colonnes'))
     dd_mode_portes = inputs.itemById('dropdownPortesMode')
     if dd_mode_portes:
         target_label = ('Encastré' if values.get('portes_mode') == 'encastre'
@@ -588,7 +589,7 @@ def rebuild_percage32_tables(children, count, existing_colonnes=None, inputs=Non
         header.minimumVisibleRows = 1
         for col_idx, texte in enumerate((
                 'Colonne {:02d}'.format(i), 'Perçage', 'Masquer haut', 'Masquer bas',
-                '3 Trous')):
+                'Trous par étagère')):
             cell = header.commandInputs.addStringValueInput(
                 'tableP32Col{:02d}HeaderCell{}'.format(i, col_idx), '', texte)
             cell.isReadOnly = True
@@ -625,17 +626,20 @@ def rebuild_percage32_tables(children, count, existing_colonnes=None, inputs=Non
             sp_bas = table.commandInputs.addIntegerSpinnerCommandInput(
                 'tableP32Col{:02d}Bas{}'.format(i, row), '',
                 0, MAX_COMPTEUR, 1, int(entry.get('masquer_bas', 0)))
-            # '3 Trous' : masque tous les trous sauf ceux utilises par une
-            # etagere mobile de cette niche (+1 au-dessus, +1 en dessous).
-            # Les perÃ§ages de charnieres ne sont jamais concernes.
-            chk_3trous = table.commandInputs.addBoolValueInput(
-                'tableP32Col{:02d}TroisTrous{}'.format(i, row), '', True,
-                '', bool(entry.get('trois_trous', False)))
+            # 'Trous par etagere' : si > 0, masque tous les trous
+            # sauf N autour de chaque etagere mobile de cette niche
+            # (N//2 au-dessus, N//2 en dessous, l'etagere elle-meme
+            # comprise). 0 = desactive (comportement d'origine, tous
+            # les trous candidats restent perces). Les percages de
+            # charnieres ne sont jamais concernes.
+            sp_trous_etg = table.commandInputs.addIntegerSpinnerCommandInput(
+                'tableP32Col{:02d}TrousEtg{}'.format(i, row), '',
+                0, 21, 1, int(entry.get('trous_par_etagere', 0)))
             table.addCommandInput(lbl, row, 0)
             table.addCommandInput(dd, row, 1)
             table.addCommandInput(sp_haut, row, 2)
             table.addCommandInput(sp_bas, row, 3)
-            table.addCommandInput(chk_3trous, row, 4)
+            table.addCommandInput(sp_trous_etg, row, 4)
 
 
 def rebuild_portes_tables(children, count, existing_colonnes=None, inputs=None):
@@ -702,7 +706,8 @@ def rebuild_portes_tables(children, count, existing_colonnes=None, inputs=None):
             table.addCommandInput(chk_o, row, 2)
 
 
-def rebuild_etageres_tables(children, count, existing_colonnes=None, inputs=None):
+def rebuild_etageres_tables(children, count, existing_colonnes=None, inputs=None,
+                             tiroirs_colonnes=None):
     # Meme principe que rebuild_percage32_tables : un mini-tableau
     # d'en-tete (Colonne NN / Nombre d'etageres / Mode de calcul) puis un
     # tableau de donnees sans quadrillage, une ligne par colonne simple ou
@@ -747,12 +752,18 @@ def rebuild_etageres_tables(children, count, existing_colonnes=None, inputs=None
         table.maximumVisibleRows = max(len(entries), 2)
 
         for row, (niche_label, entry) in enumerate(entries):
+            niche_pleine = _niche_pleine_tiroirs(tiroirs_colonnes, i, row)
             lbl = table.commandInputs.addStringValueInput(
                 'tableEtgCol{:02d}Label{}'.format(i, row), '', niche_label)
             lbl.isReadOnly = True
+            nb_etg_init = 0 if niche_pleine else int(entry.get('nb_etageres', 0))
             sp_nb = table.commandInputs.addIntegerSpinnerCommandInput(
                 'tableEtgCol{:02d}Nb{}'.format(i, row), '',
-                0, MAX_COMPTEUR, 1, int(entry.get('nb_etageres', 0)))
+                0, MAX_COMPTEUR, 1, nb_etg_init)
+            if niche_pleine:
+                # Niche deja pleine de tiroirs (Hauteur egale) : pas
+                # de place pour une etagere mobile.
+                sp_nb.isEnabled = False
             dd = table.commandInputs.addDropDownCommandInput(
                 'tableEtgCol{:02d}Mode{}'.format(i, row), '',
                 adsk.core.DropDownStyles.TextListDropDownStyle)
@@ -761,6 +772,8 @@ def rebuild_etageres_tables(children, count, existing_colonnes=None, inputs=None
                 mode_actuel = 'hauteur_colonne'
             for code, label in ETAGERES_MODES:
                 dd.listItems.add(label, mode_actuel == code)
+            if niche_pleine:
+                dd.isEnabled = False
             table.addCommandInput(lbl, row, 0)
             table.addCommandInput(sp_nb, row, 1)
             table.addCommandInput(dd, row, 2)
@@ -789,7 +802,7 @@ def refresh_tiroirs_niche_detail(inputs, col_i, niche_idx):
         sp_nb = inputs.itemById('tableTirCol{:02d}Nb{}'.format(col_i, n_idx))
         dd = inputs.itemById('tableTirCol{:02d}Mode{}'.format(col_i, n_idx))
         if not sp_nb or not dd:
-            etats.append((0, 'hauteur_niche', []))
+            etats.append((0, 'hauteur_niche', [], []))
             continue
         nb_t = int(sp_nb.value)
         mode = 'hauteur_niche'
@@ -864,6 +877,29 @@ def _niche_a_porte(portes_colonnes, col_i, niche_idx0):
     if not isinstance(entry, dict):
         return False
     return entry.get('choix', 'off') != 'off'
+
+
+def _niche_pleine_tiroirs(tiroirs_colonnes, col_i, niche_idx0):
+    """Renvoie True si la niche 'niche_idx0' (index 0) de la colonne
+    'col_i' (1-indexee) est occupee par des tiroirs en mode 'Hauteur
+    egale' (les tiroirs se partagent alors TOUTE la hauteur de la
+    niche, ne laissant aucune place pour une etagere mobile). En
+    mode Personnalise, les hauteurs sont libres et peuvent laisser de
+    la place : on n'interdit donc PAS l'etagere mobile dans ce cas.
+    Sert a interdire l'etagere mobile dans une niche deja pleine de
+    tiroirs."""
+    if not tiroirs_colonnes or col_i > len(tiroirs_colonnes):
+        return False
+    col = tiroirs_colonnes[col_i - 1]
+    niches = col if isinstance(col, list) else ([col] if col else [])
+    if niche_idx0 >= len(niches):
+        return False
+    entry = niches[niche_idx0]
+    if not isinstance(entry, dict):
+        return False
+    nb_t = int(entry.get('nb_tiroirs', 0) or 0)
+    mode_t = entry.get('mode', 'hauteur_niche')
+    return nb_t > 0 and mode_t == 'hauteur_niche'
 
 
 def rebuild_tiroirs_tables(children, count, existing_colonnes=None, inputs=None,
@@ -1440,8 +1476,13 @@ def refresh_etagere_fixe_colonne(inputs, col_i):
         if group_etageres:
             existing_e = read_etageres_tables(
                 group_etageres.children, int_m2.value + 1, inputs=inputs)
+            _group_tiroirs_e = inputs.itemById('groupTiroirsColonnes')
+            _existing_tiroirs_e = (
+                read_tiroirs_tables(_group_tiroirs_e.children, int_m2.value + 1, inputs=inputs)
+                if _group_tiroirs_e else None)
             rebuild_etageres_tables(
-                group_etageres.children, int_m2.value + 1, existing_e, inputs=inputs)
+                group_etageres.children, int_m2.value + 1, existing_e, inputs=inputs,
+                tiroirs_colonnes=_existing_tiroirs_e)
         adsk.doEvents()
         group_portes = inputs.itemById('groupPortesColonnes')
         if group_portes:
@@ -1533,16 +1574,16 @@ def read_etageres_fixes_colonnes_from_ui(inputs, count):
 
 
 def _read_percage32_table_row(table, row):
-    # Lit les 4 valeurs (Systeme/Masquer haut/bas/3 Trous) de la ligne
-    # 'row' du tableau Percage 32 (colonnes 1/2/3/4, la colonne 0 est
-    # le repere en lecture seule). Renvoie None si la ligne n'existe pas
-    # (tableau pas encore aussi rempli qu'attendu).
+    # Lit les 4 valeurs (Systeme/Masquer haut/bas/Trous par etagere)
+    # de la ligne 'row' du tableau Percage 32 (colonnes 1/2/3/4, la
+    # colonne 0 est le repere en lecture seule). Renvoie None si la
+    # ligne n'existe pas (tableau pas encore aussi rempli qu'attendu).
     if row >= table.rowCount:
         return None
     dd = table.getInputAtPosition(row, 1)
     sp_haut = table.getInputAtPosition(row, 2)
     sp_bas = table.getInputAtPosition(row, 3)
-    chk_3trous = table.getInputAtPosition(row, 4)
+    sp_trous_etg = table.getInputAtPosition(row, 4)
     systeme = 'off'
     if dd and dd.selectedItem:
         systeme = {'Off': 'off', '32': '32', '64': '64'}.get(dd.selectedItem.name, 'off')
@@ -1550,7 +1591,7 @@ def _read_percage32_table_row(table, row):
         'systeme': systeme,
         'masquer_haut': int(sp_haut.value) if sp_haut else 0,
         'masquer_bas': int(sp_bas.value) if sp_bas else 0,
-        'trois_trous': bool(chk_3trous.value) if chk_3trous else False,
+        'trous_par_etagere': int(sp_trous_etg.value) if sp_trous_etg else 0,
     }
 
 
@@ -1626,7 +1667,7 @@ def refresh_computed_fields(inputs):
     de la boîte de dialogue. Lit les valeurs actuellement affichees de chaque
     colonne AVANT de reconstruire, pour ne jamais perdre ce que l'utilisateur a
     deja saisi ailleurs quand une seule colonne vient de changer."""
-    tab_m = inputs.itemById('tabMontants')
+    group_axe_m = inputs.itemById('groupAxeMontants')
     int_m = inputs.itemById('intNbMontants')
     # Chaque bloc ci-dessous ne supprime/recree ses volets que si le nombre
     # de colonnes a REELLEMENT change : reconstruire des volets identiques a
@@ -1642,18 +1683,19 @@ def refresh_computed_fields(inputs):
     mode_m = 'axe_egal'
     if dd_mode_m and dd_mode_m.selectedItem:
         mode_m = mode_label_to_code.get(dd_mode_m.selectedItem.name, 'axe_egal')
-    if tab_m and int_m:
+    if group_axe_m and int_m:
         # En mode Personnalise, on ne recalcule que si le NOMBRE a change
         # (comme les autres onglets) pour ne jamais perdre une saisie
         # manuelle. Dans les 2 modes automatiques, on recalcule toujours
         # (idempotent, et necessaire pour reagir a un changement de mode
         # sans changement de nombre).
         need_rebuild = (mode_m != 'personnalise'
-                        or count_montant_fields(tab_m.children) != int_m.value)
+                        or count_montant_fields(group_axe_m.children) != int_m.value)
         if need_rebuild:
-            existing_montants = read_montants_from_ui(tab_m.children, count_montant_fields(tab_m.children))
+            existing_montants = read_montants_from_ui(
+                group_axe_m.children, count_montant_fields(group_axe_m.children))
             rebuild_montant_axis_fields(
-                tab_m.children, int_m.value, get_largeur_mm(inputs), existing_montants,
+                group_axe_m.children, int_m.value, get_largeur_mm(inputs), existing_montants,
                 mode_m, get_ep_panneau_mm(inputs))
         # (Plus de volet a deplier/replier : Montant intermediaire est
         # desormais un onglet a part entiere, toujours visible.)
@@ -1699,8 +1741,13 @@ def refresh_computed_fields(inputs):
     if group_etageres and int_m:
         existing_e = read_etageres_tables(
             group_etageres.children, int_m.value + 1, inputs=inputs)
+        _group_tiroirs_e2 = inputs.itemById('groupTiroirsColonnes')
+        _existing_tiroirs_e2 = (
+            read_tiroirs_tables(_group_tiroirs_e2.children, int_m.value + 1, inputs=inputs)
+            if _group_tiroirs_e2 else None)
         rebuild_etageres_tables(
-            group_etageres.children, int_m.value + 1, existing_e, inputs=inputs)
+            group_etageres.children, int_m.value + 1, existing_e, inputs=inputs,
+            tiroirs_colonnes=_existing_tiroirs_e2)
     group_portes = inputs.itemById('groupPortesColonnes')
     if group_portes and int_m:
         existing_portes = read_portes_tables(
@@ -1899,11 +1946,16 @@ def add_meuble_fields(inputs, cur_mm_func):
     group_dimensions = tc.addGroupCommandInput('groupDimensions', 'Dimensions')
     group_dimensions.isExpanded = True
     gd = group_dimensions.children
-    for field_id, key, default_mm, min_mm, max_mm, label in FIELDS_CAISSON:
+    # Coupe d'onglet placee entre Profondeur et Epaisseur panneaux
+    # meuble (3 premiers champs de FIELDS_CAISSON, puis la case, puis
+    # le reste).
+    for field_id, key, default_mm, min_mm, max_mm, label in FIELDS_CAISSON[:3]:
         add_value_field(gd, field_id, label, mm_to_cm(cur_mm_func(key, default_mm)), min_mm, max_mm)
     gd.addBoolValueInput(
         'checkCoupeOnglet', "Coupe d'onglet", True, '',
         bool(cur_mm_func('coupe_onglet', False)))
+    for field_id, key, default_mm, min_mm, max_mm, label in FIELDS_CAISSON[3:]:
+        add_value_field(gd, field_id, label, mm_to_cm(cur_mm_func(key, default_mm)), min_mm, max_mm)
 
     group_socle = tc.addGroupCommandInput('groupSocle', 'Socle')
     group_socle.isExpanded = True
@@ -1931,14 +1983,18 @@ def add_meuble_fields(inputs, cur_mm_func):
     cur_nb_m = int(cur_mm_func('nb_montants', 1))
     tm.addIntegerSpinnerCommandInput(
         'intNbMontants', 'Nombre de montants', 0, MAX_COMPTEUR, 1, cur_nb_m)
-    largeur_courante = cur_mm_func('largeur', 1000)
-    rebuild_montant_axis_fields(
-        tm, cur_nb_m, largeur_courante, cur_mm_func('montants', None),
-        mode_montants_actuel, cur_mm_func('ep_panneau', 19))
-    add_value_field(tm, 'champRetraitMontant', 'Retrait',
-                     mm_to_cm(cur_mm_func('retrait_montant', 0)), 0, 100)
     add_value_field(tm, 'champEpMontant', 'Épaisseur',
                      mm_to_cm(cur_mm_func('ep_montant', cur_mm_func('ep_panneau', 19))), 8, 40)
+    add_value_field(tm, 'champRetraitMontant', 'Retrait',
+                     mm_to_cm(cur_mm_func('retrait_montant', 0)), 0, 100)
+    largeur_courante = cur_mm_func('largeur', 1000)
+    group_axe_montants = tm.addGroupCommandInput(
+        'groupAxeMontants', 'Axe montant intermédiaire')
+    group_axe_montants.isExpanded = True
+    rebuild_montant_axis_fields(
+        group_axe_montants.children, cur_nb_m, largeur_courante,
+        cur_mm_func('montants', None), mode_montants_actuel,
+        cur_mm_func('ep_panneau', 19))
 
     # --- Volet 2 : Étagères fixe --------------------------------------------
     tab_etageres_fixe = inputs.addTabCommandInput('tabEtageresFixe', 'Étagères fixe')
@@ -1959,10 +2015,10 @@ def add_meuble_fields(inputs, cur_mm_func):
         'Intérieur niche', mode_ef_actuel == 'hauteur_colonne')
     dd_mode_ef.listItems.add(
         'Personnalisé', mode_ef_actuel == 'personnalise')
-    add_value_field(gef, 'champRetraitEtagereFixe', 'Retrait',
-                     mm_to_cm(cur_mm_func('retrait_etagere_fixe', 0)), 0, 100)
     add_value_field(gef, 'champEpEtagereFixe', 'Épaisseur',
                      mm_to_cm(cur_mm_func('ep_etagere_fixe', cur_mm_func('ep_panneau', 19))), 8, 40)
+    add_value_field(gef, 'champRetraitEtagereFixe', 'Retrait',
+                     mm_to_cm(cur_mm_func('retrait_etagere_fixe', 0)), 0, 100)
     group_ef = gef.addGroupCommandInput('groupEtageresFixeColonnes', 'Étagères')
     group_ef.isExpanded = True
     rebuild_etageres_fixe_colonne_groups(
@@ -1977,7 +2033,7 @@ def add_meuble_fields(inputs, cur_mm_func):
     tab_percage32 = inputs.addTabCommandInput('tabPercage32', 'Perçage 32')
     gp32 = tab_percage32.children
     # Retrait façade et Référence perçage : communs à toutes les colonnes.
-    add_value_field(gp32, 'champPercage32Retrait', 'Retrait façade',
+    add_value_field(gp32, 'champPercage32Retrait', 'Retrait',
                      mm_to_cm(cur_mm_func('percage32_retrait', 37)), 0, 500)
     add_value_field(gp32, 'champPercage32MargeBas', 'Référence perçage',
                      mm_to_cm(cur_mm_func('percage32_marge_bas', 9.5)), 0, 1000)
@@ -2000,10 +2056,10 @@ def add_meuble_fields(inputs, cur_mm_func):
     tab_etageres = inputs.addTabCommandInput('tabEtageres', 'Étagères mobile')
     ge = tab_etageres.children
     # Retrait : commun à toutes les colonnes.
-    add_value_field(ge, 'champRetraitEtagere', 'Retrait',
-                     mm_to_cm(cur_mm_func('retrait_etagere', 0)), 0, 100)
     add_value_field(ge, 'champEpEtagereMobile', 'Épaisseur',
                      mm_to_cm(cur_mm_func('ep_etagere_mobile', cur_mm_func('ep_panneau', 19))), 8, 40)
+    add_value_field(ge, 'champRetraitEtagere', 'Retrait',
+                     mm_to_cm(cur_mm_func('retrait_etagere', 0)), 0, 100)
     # Un volet rabattable par colonne (même correspondance colonne <->
     # compartiment que Perçage 32), chacun avec son propre Nombre d'étagères
     # et son propre Mode de calcul.
@@ -2016,7 +2072,8 @@ def add_meuble_fields(inputs, cur_mm_func):
     group_etageres.isExpanded = True
     rebuild_etageres_tables(
         group_etageres.children, cur_nb_m + 1,
-        values_etageres_actuelles.get('etageres_colonnes'), inputs=inputs)
+        values_etageres_actuelles.get('etageres_colonnes'), inputs=inputs,
+        tiroirs_colonnes=cur_mm_func('tiroirs_colonnes', None))
 
     # --- Volet 5 : Portes -------------------------------------------------
     tab_portes = inputs.addTabCommandInput('tabPortes', 'Portes')
@@ -2084,17 +2141,13 @@ def add_meuble_fields(inputs, cur_mm_func):
         adsk.core.DropDownStyles.TextListDropDownStyle)
     dd_mode_tiroirs.listItems.add('En applique', mode_tiroirs_actuel != 'encastre')
     dd_mode_tiroirs.listItems.add('Encastré', mode_tiroirs_actuel == 'encastre')
-    add_value_field(gt, 'champRetraitPercageCoulisse',
-                     'Décalage en profondeur',
-                     mm_to_cm(cur_mm_func('retrait_percage_coulisse', 0)), 0, 100)
-    add_value_field(gt, 'champJeuTiroir', 'Jeu périphérique façade',
-                     mm_to_cm(cur_mm_func('jeu_tiroir', 2)), 0.5, 10)
-    add_value_field(gt, 'champEpFaceTiroir', 'Épaisseur façade',
-                     mm_to_cm(cur_mm_func('ep_face_tiroir', cur_mm_func('ep_panneau', 19))), 8, 40)
-    add_value_field(gt, 'champEpFondTiroir', 'Épaisseur fond tiroir',
-                     mm_to_cm(cur_mm_func('ep_fond_tiroir', cur_mm_func('ep_fond', 8))), 3, 19)
     add_value_field(gt, 'champEpPanneauTiroir', 'Épaisseur panneaux tiroir',
                      mm_to_cm(cur_mm_func('ep_panneau_tiroir', cur_mm_func('ep_panneau', 19))), 8, 40)
+    add_value_field(gt, 'champEpFondTiroir', 'Épaisseur fond tiroir',
+                     mm_to_cm(cur_mm_func('ep_fond_tiroir', cur_mm_func('ep_fond', 8))), 3, 19)
+    add_value_field(gt, 'champRetraitPercageCoulisse',
+                     'Retrait',
+                     mm_to_cm(cur_mm_func('retrait_percage_coulisse', 0)), 0, 100)
     group_coulisse = gt.addGroupCommandInput('groupCoulisse', 'Coulisse')
     group_coulisse.isExpanded = True
     gco = group_coulisse.children
@@ -2110,6 +2163,10 @@ def add_meuble_fields(inputs, cur_mm_func):
     values_tiroirs_actuelles = {'tiroirs_colonnes': cur_mm_func('tiroirs_colonnes', None)}
     group_tiroirs = gt.addGroupCommandInput('groupTiroirsColonnes', 'Façades')
     group_tiroirs.isExpanded = True
+    add_value_field(group_tiroirs.children, 'champJeuTiroir', 'Jeu périphérique façade',
+                     mm_to_cm(cur_mm_func('jeu_tiroir', 2)), 0.5, 10)
+    add_value_field(group_tiroirs.children, 'champEpFaceTiroir', 'Épaisseur façade',
+                     mm_to_cm(cur_mm_func('ep_face_tiroir', cur_mm_func('ep_panneau', 19))), 8, 40)
     rebuild_tiroirs_tables(
         group_tiroirs.children, cur_nb_m + 1,
         values_tiroirs_actuelles.get('tiroirs_colonnes'), inputs=inputs,
@@ -2876,6 +2933,19 @@ class CreateInputChangedHandler(adsk.core.InputChangedEventHandler):
     def notify(self, args):
         try:
             full_inputs = args.firingEvent.sender.commandInputs
+            # 'Trous par etagere' (Percage 32) : n'accepte que des
+            # nombres impairs (0 = desactive reste autorise), pour
+            # une repartition symetrique autour de l'etagere. Une
+            # valeur paire saisie/incrementee est arrondie a
+            # l'impair superieur.
+            if ('TrousEtg' in args.input.id
+                    and args.input.id.startswith('tableP32Col')):
+                try:
+                    _v = int(args.input.value)
+                    if _v > 0 and _v % 2 == 0:
+                        args.input.value = _v + 1
+                except Exception:
+                    pass
             if args.input.id == 'dropdownMeuble':
                 apply_meuble_selection(full_inputs)
             elif args.input.id == 'dropdownPreset':
@@ -3011,6 +3081,19 @@ class CreateInputChangedHandler(adsk.core.InputChangedEventHandler):
                     rebuild_prise_main_table(
                         _tab_pm_td.children, _int_m_td.value + 1,
                         _epp_td, _ept_td, _pmp_td, _pmt_td, inputs=full_inputs)
+                # Idem : une niche qui devient (ou cesse d'etre)
+                # pleine de tiroirs (Hauteur egale) doit
+                # bloquer/debloquer l'etagere mobile correspondante.
+                _group_etg_td = full_inputs.itemById('groupEtageresColonnes')
+                if _group_etg_td and _int_m_td:
+                    _ept_td2 = read_tiroirs_tables(
+                        full_inputs, _int_m_td.value + 1, inputs=full_inputs)
+                    _existing_etg_td = read_etageres_tables(
+                        _group_etg_td.children, _int_m_td.value + 1, inputs=full_inputs)
+                    rebuild_etageres_tables(
+                        _group_etg_td.children, _int_m_td.value + 1,
+                        _existing_etg_td, inputs=full_inputs,
+                        tiroirs_colonnes=_ept_td2)
         except Exception:
             if ui:
                 ui.messageBox("Erreur mise à jour de l'interface :\n{}".format(traceback.format_exc()))

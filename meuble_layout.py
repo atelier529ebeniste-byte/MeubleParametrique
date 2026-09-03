@@ -28,6 +28,12 @@ LAMELLO_DIAM_MM = 5
 LAMELLO_DEPTH_MM = 9
 LAMELLO_MARGE_SECURITE_MM = 3
 LAMELLO_DECALE_MM = 101  # écart entre les 2 perçages de chaque assemblage
+# Distance FIXE (independante de l'epaisseur des panneaux) entre le
+# percçage Lamello Montant<->Dessous/Dessus et le bord exterieur de
+# ces panneaux (bas du Dessous, haut du Dessus). Si l'epaisseur
+# panneaux meuble change, ce percçage doit rester a cette distance
+# fixe du bord, PAS a l'axe (Ep/2) du panneau.
+LAMELLO_MARGE_DESSUS_DESSOUS_MM = 9.5
 
 # --- Perçage système 32 (taquets d'étagères réglables) ---
 PERCAGE32_DIAM_MM = 5
@@ -136,11 +142,18 @@ def normalize_percage32_colonne(entry, legacy_actif=True, legacy_64=False,
         systeme = entry.get('systeme', '32')
         if systeme not in ('off', '32', '64'):
             systeme = '32'
+        # 'trous_par_etagere' (nombre, 0 = desactive) remplace
+        # l'ancien 'trois_trous' (bool) : migration automatique des
+        # meubles deja enregistres (True -> 3, False/absent -> 0).
+        if 'trous_par_etagere' in entry:
+            trous_par_etagere = max(0, int(entry.get('trous_par_etagere', 0) or 0))
+        else:
+            trous_par_etagere = 3 if entry.get('trois_trous', False) else 0
         return {
             'systeme': systeme,
             'masquer_bas': max(0, int(entry.get('masquer_bas', 0) or 0)),
             'masquer_haut': max(0, int(entry.get('masquer_haut', 0) or 0)),
-            'trois_trous': bool(entry.get('trois_trous', False)),
+            'trous_par_etagere': trous_par_etagere,
         }
     # Ancien format : bool (colonne active/inactive au sein d'un système 32/64
     # unique et global) ; le masquage était lui aussi un réglage global.
@@ -153,6 +166,7 @@ def normalize_percage32_colonne(entry, legacy_actif=True, legacy_64=False,
         'systeme': systeme,
         'masquer_bas': max(0, int(legacy_masquer_bas or 0)),
         'masquer_haut': max(0, int(legacy_masquer_haut or 0)),
+        'trous_par_etagere': 0,
     }
 
 
@@ -1150,6 +1164,17 @@ def compute_layout(values):
             nb_etageres_niche = col_etageres['nb_etageres']
             if nb_etageres_niche <= 0 or p32_niches[niche_i]['systeme'] == 'off':
                 continue  # pas d'etagere demandee, ou niche sans percage systeme 32
+            _tir_ici = (tiroirs_niches_par_colonne[bay_i][niche_i]
+                        if bay_i < len(tiroirs_niches_par_colonne)
+                        and niche_i < len(tiroirs_niches_par_colonne[bay_i])
+                        else None)
+            if (_tir_ici and _tir_ici.get('nb_tiroirs', 0) > 0
+                    and _tir_ici.get('mode', 'hauteur_niche') == 'hauteur_niche'):
+                # Mode Hauteur egale : les tiroirs se partagent TOUTE
+                # la hauteur de la niche, sans espace libre garanti --
+                # aucune etagere mobile ne doit donc y etre placee
+                # (elle finirait forcement a l'interieur d'un tiroir).
+                continue
             niche_candidates = p32_niches_candidates[bay_i][niche_i]
             z_starts = compute_etagere_z_starts(
                 nb_etageres_niche, col_etageres['mode'], nz0, nz1 - nz0,
@@ -1186,7 +1211,8 @@ def compute_layout(values):
         for niche_i in range(len(_nbounds_ici)):
             _niche_cfg = (_p32_niches_ici[niche_i]
                           if niche_i < len(_p32_niches_ici) else {})
-            if not _niche_cfg.get('trois_trous'):
+            _nb_trous_etg = int(_niche_cfg.get('trous_par_etagere', 0) or 0)
+            if _nb_trous_etg <= 0:
                 continue
             _candidats_niche = sorted(
                 p32_niches_candidates[bay_i][niche_i]
@@ -1195,13 +1221,18 @@ def compute_layout(values):
                 etageres_z_par_colonne[bay_i][niche_i]
                 if niche_i < len(etageres_z_par_colonne[bay_i]) else [])
             _gardes = set()
+            # Offsets symetriques autour de l'etagere : N trous au
+            # total (N//2 au-dessus, le reste en dessous -- gere
+            # aussi bien les N impairs que pairs).
+            _demi_haut = _nb_trous_etg // 2
+            _demi_bas = _nb_trous_etg - 1 - _demi_haut
             for _z_et in _z_etageres_niche:
                 if not _candidats_niche:
                     continue
                 _idx_proche = min(
                     range(len(_candidats_niche)),
                     key=lambda _idx: abs(_candidats_niche[_idx] - _z_et))
-                for _offset in (-1, 0, 1):
+                for _offset in range(-_demi_bas, _demi_haut + 1):
                     _idx = _idx_proche + _offset
                     if 0 <= _idx < len(_candidats_niche):
                         _gardes.add(round(_candidats_niche[_idx], 4))
@@ -1940,14 +1971,15 @@ def compute_layout(values):
             if key not in seen:
                 seen.add(key)
                 positions.append((y_center, tag))
+        marge_dd = mm_to_cm(LAMELLO_MARGE_DESSUS_DESSOUS_MM)
         for y_center, tag in positions:
-            holes.append(('X', Ep, -1, y_center, Ep / 2.0, diam_lamello, depth_lamello,
+            holes.append(('X', Ep, -1, y_center, marge_dd, diam_lamello, depth_lamello,
                            'Lamello Montant G-Dessous {}'.format(tag)))
-            holes.append(('X', Ep, -1, y_center, H - Ep / 2.0, diam_lamello, depth_lamello,
+            holes.append(('X', Ep, -1, y_center, H - marge_dd, diam_lamello, depth_lamello,
                            'Lamello Montant G-Dessus {}'.format(tag)))
-            holes.append(('X', L - Ep, 1, y_center, Ep / 2.0, diam_lamello, depth_lamello,
+            holes.append(('X', L - Ep, 1, y_center, marge_dd, diam_lamello, depth_lamello,
                            'Lamello Montant D-Dessous {}'.format(tag)))
-            holes.append(('X', L - Ep, 1, y_center, H - Ep / 2.0, diam_lamello, depth_lamello,
+            holes.append(('X', L - Ep, 1, y_center, H - marge_dd, diam_lamello, depth_lamello,
                            'Lamello Montant D-Dessus {}'.format(tag)))
         # Montants intermediaires : memes positions AVANT/arriere,
         # mais decalees du retrait_montant (ces montants ne
@@ -1965,9 +1997,13 @@ def compute_layout(values):
                 positions_mi.append((y_center, tag))
         for y_center, tag in positions_mi:
             for mi, centre in enumerate(montant_centres, start=1):
-                holes.append(('Z', Ep, -1, centre, y_center, diam_lamello, depth_lamello,
+                # Reference sur la GAUCHE du montant (pas l'axe) :
+                # marge fixe depuis le bord gauche, pour que le trou
+                # ne bouge pas si l'epaisseur montant change.
+                x_gauche_mi = centre - Ep_montant / 2.0 + marge_dd
+                holes.append(('Z', Ep, -1, x_gauche_mi, y_center, diam_lamello, depth_lamello,
                                'Lamello Montant Inter {} Dessous {}'.format(mi, tag)))
-                holes.append(('Z', H - Ep, 1, centre, y_center, diam_lamello, depth_lamello,
+                holes.append(('Z', H - Ep, 1, x_gauche_mi, y_center, diam_lamello, depth_lamello,
                                'Lamello Montant Inter {} Dessus {}'.format(mi, tag)))
 
         # --- Étagères fixe : mêmes perçages d'assemblage Lamello (avant /
@@ -2001,13 +2037,17 @@ def compute_layout(values):
             depth_droite_ef = depth_lamello if bay_i == nb_segments_ef - 1 else depth_lamello_partage
             for k, hauteur_mm in enumerate(col_ef['hauteurs'], start=1):
                 z_centre_ef = mm_to_cm(hauteur_mm)
+                # Reference sur le HAUT de l'etagere (pas l'axe) :
+                # marge fixe depuis le dessus du panneau, pour que le
+                # trou ne bouge pas si l'epaisseur etagere fixe change.
+                z_haut_ef = z_centre_ef + Ep_etagere_fixe / 2.0 - marge_dd
                 for y_center, tag in positions_ef:
                     if depth_gauche_ef > 0:
-                        holes.append(('X', seg_x0, -1, y_center, z_centre_ef, diam_lamello, depth_gauche_ef,
+                        holes.append(('X', seg_x0, -1, y_center, z_haut_ef, diam_lamello, depth_gauche_ef,
                                        'Lamello Étagère fixe {} Compart {} Gauche {}'.format(
                                            k, bay_i + 1, tag)))
                     if depth_droite_ef > 0:
-                        holes.append(('X', seg_x1, 1, y_center, z_centre_ef, diam_lamello, depth_droite_ef,
+                        holes.append(('X', seg_x1, 1, y_center, z_haut_ef, diam_lamello, depth_droite_ef,
                                        'Lamello Étagère fixe {} Compart {} Droite {}'.format(
                                            k, bay_i + 1, tag)))
 
