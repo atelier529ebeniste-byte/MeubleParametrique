@@ -44,8 +44,6 @@
   <div id="svgHolder"><div id="vide">En attente des données du meuble…</div></div>
 </div>
 <script>
-function initialiserApercu() {
-
 var derniereDonnees = null;
 var vueActuelle = 'face';
 var vueChangee = false;
@@ -84,13 +82,28 @@ document.querySelectorAll('.onglet').forEach(function(el) {
   });
 });
 
+// Definit, pour chaque vue, quels axes des donnees (mm) servent d'abscisse
+// et d'ordonnee SVG, et si l'ordonnee doit etre inversee (Z et Y sont
+// mesures depuis le bas/avant, SVG grandit vers le bas/droite).
+// coupeCle/coupeMaxCle : sur quel axe (cache, non affiche par cette
+// vue) porte le plan de coupe, et quelle dimension totale du meuble
+// sert de max au curseur.
+// axMinCle/axMaxCle et ayMinCle/ayMaxCle : bornes REELLES (mm, voir
+// X_min/X_max/Y_min/Y_max/Z_min/Z_max envoyes par Python) de chaque
+// axe affiche -- pas seulement 0..dimension declaree, pour bien
+// couvrir les elements qui debordent (ex. socle en Z negatif).
+// coupeMinCle/coupeMaxCle : memes bornes reelles, pour l'axe cache
+// utilise par le curseur de coupe.
 var VUES = {
-  face:   { largeurCle: 'L_mm', hauteurCle: 'H_mm', ax0: 'x0', ax1: 'x1', ay0: 'z0', ay1: 'z1', inverseY: true,
-            coupeCle0: 'y0', coupeCle1: 'y1', coupeMaxCle: 'P_mm', coupeNom: 'Profondeur' },
-  cote:   { largeurCle: 'P_mm', hauteurCle: 'H_mm', ax0: 'y0', ax1: 'y1', ay0: 'z0', ay1: 'z1', inverseY: true,
-            coupeCle0: 'x0', coupeCle1: 'x1', coupeMaxCle: 'L_mm', coupeNom: 'Largeur' },
-  dessus: { largeurCle: 'L_mm', hauteurCle: 'P_mm', ax0: 'x0', ax1: 'x1', ay0: 'y0', ay1: 'y1', inverseY: true, inverseX: true,
-            coupeCle0: 'z0', coupeCle1: 'z1', coupeMaxCle: 'H_mm', coupeNom: 'Hauteur' }
+  face:   { axMinCle: 'X_min', axMaxCle: 'X_max', ayMinCle: 'Z_min', ayMaxCle: 'Z_max',
+            ax0: 'x0', ax1: 'x1', ay0: 'z0', ay1: 'z1', inverseY: true,
+            coupeCle0: 'y0', coupeCle1: 'y1', coupeMinCle: 'Y_min', coupeMaxCle: 'Y_max', coupeNom: 'Profondeur' },
+  cote:   { axMinCle: 'Y_min', axMaxCle: 'Y_max', ayMinCle: 'Z_min', ayMaxCle: 'Z_max',
+            ax0: 'y0', ax1: 'y1', ay0: 'z0', ay1: 'z1', inverseY: true,
+            coupeCle0: 'x0', coupeCle1: 'x1', coupeMinCle: 'X_min', coupeMaxCle: 'X_max', coupeNom: 'Largeur' },
+  dessus: { axMinCle: 'X_min', axMaxCle: 'X_max', ayMinCle: 'Y_min', ayMaxCle: 'Y_max',
+            ax0: 'x0', ax1: 'x1', ay0: 'y0', ay1: 'y1', inverseY: true,
+            coupeCle0: 'z0', coupeCle1: 'z1', coupeMinCle: 'Z_min', coupeMaxCle: 'Z_max', coupeNom: 'Hauteur' }
 };
 
 function dessiner(donnees) {
@@ -99,15 +112,21 @@ function dessiner(donnees) {
     || derniereDonnees.L_mm !== donnees.L_mm || derniereDonnees.H_mm !== donnees.H_mm;
   derniereDonnees = donnees;
   if (nouveauMeuble || vueChangee) {
-    var maxCoupe = donnees[v.coupeMaxCle] || 500;
-    coupeSliderEl.min = 0;
-    coupeSliderEl.max = maxCoupe;
+    var coupeMin = donnees[v.coupeMinCle] || 0;
+    var coupeMax = donnees[v.coupeMaxCle] || 500;
+    coupeSliderEl.min = coupeMin;
+    coupeSliderEl.max = coupeMax;
     coupeSliderEl.value = 0;
-    coupeValEl.textContent = v.coupeNom + ' : ' + Math.round(parseFloat(coupeSliderEl.value)) + ' mm';
+    coupeValEl.textContent = v.coupeNom + ' : 0 mm';
     vueChangee = false;
   }
   var holder = document.getElementById('svgHolder');
-  var L = donnees[v.largeurCle], H = donnees[v.hauteurCle];
+  // Bornes REELLES (mm) de l'axe horizontal/vertical affiche par
+  // cette vue (pas seulement 0..dimension declaree) : un socle actif
+  // fait descendre certains panneaux en Z negatif, par exemple.
+  var axMin = donnees[v.axMinCle] || 0, axMax = donnees[v.axMaxCle] || 0;
+  var ayMin = donnees[v.ayMinCle] || 0, ayMax = donnees[v.ayMaxCle] || 0;
+  var L = axMax - axMin, H = ayMax - ayMin;
   document.getElementById('dims').textContent =
     ' ' + Math.round(donnees.L_mm) + ' x ' + Math.round(donnees.H_mm) + ' x ' + Math.round(donnees.P_mm) + ' mm';
   if (!L || !H) { holder.innerHTML = '<div id="vide">Dimensions invalides</div>'; return; }
@@ -117,8 +136,8 @@ function dessiner(donnees) {
   var svgW = L * echelle + 2*marge;
   var svgH = H * echelle + 2*marge;
 
-  function ax(val) { return marge + (v.inverseX ? (L - val) : val) * echelle; }
-  function ay(val) { return v.inverseY ? (marge + (H - val) * echelle) : (marge + val * echelle); }
+  function ax(val) { return marge + (v.inverseX ? (axMax - val) : (val - axMin)) * echelle; }
+  function ay(val) { return v.inverseY ? (marge + (ayMax - val) * echelle) : (marge + (val - ayMin) * echelle); }
 
   var svg = '<svg width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">';
 
@@ -130,11 +149,21 @@ function dessiner(donnees) {
     });
   }
   elements.forEach(function(p) {
+    var cls = p.type || 'panneau';
+    // Coupe d'onglet : contour reel (parallelogramme/trapeze) au lieu
+    // du rectangle simple, uniquement en vue Face (le chanfrein ne
+    // concerne que le plan X-Z).
+    if (p.poly_xz && vueActuelle === 'face') {
+      var ptsTxt = p.poly_xz.map(function(pt) {
+        return ax(pt[0]) + ',' + ay(pt[1]);
+      }).join(' ');
+      svg += '<polygon class="' + cls + '" points="' + ptsTxt + '"><title>' + (p.nom||'') + '</title></polygon>';
+      return;
+    }
     var a0 = ax(p[v.ax0]), a1 = ax(p[v.ax1]);
     var b0 = ay(p[v.ay0]), b1 = ay(p[v.ay1]);
     var x = Math.min(a0, a1), w = Math.max(1, Math.abs(a1 - a0));
     var y = Math.min(b0, b1), h = Math.max(1, Math.abs(b1 - b0));
-    var cls = p.type || 'panneau';
     svg += '<rect class="' + cls + '" x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '"><title>' + (p.nom||'') + '</title></rect>';
     if ((cls === 'porte' || cls === 'tiroir') && vueActuelle === 'face') {
       var cy = y + h / 2;
@@ -148,6 +177,7 @@ function dessiner(donnees) {
   appliquerTransform();
 }
 
+// --- Zoom / panoramique -------------------------------------------
 var zoom = 1, panX = 0, panY = 0;
 var enTrainDeGlisser = false, glisserX0 = 0, glisserY0 = 0, panX0 = 0, panY0 = 0;
 
@@ -171,6 +201,7 @@ svgHolderEl.addEventListener('wheel', function(e) {
   var sourisX = e.clientX - rect.left, sourisY = e.clientY - rect.top;
   var facteur = (e.deltaY < 0) ? 1.15 : (1 / 1.15);
   var nouveauZoom = Math.min(20, Math.max(0.2, zoom * facteur));
+  // Garde le point sous la souris fixe pendant le zoom.
   panX = sourisX - (sourisX - panX) * (nouveauZoom / zoom);
   panY = sourisY - (sourisY - panY) * (nouveauZoom / zoom);
   zoom = nouveauZoom;
@@ -207,16 +238,6 @@ window.fusionJavaScriptHandler = {
     }
   }
 };
-}
-try {
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initialiserApercu);
-  } else {
-    initialiserApercu();
-  }
-} catch (e) {
-  document.body.innerHTML = '<pre style="color:red;padding:10px;">Erreur JS : ' + e.message + '</pre>';
-}
 </script>
 </body>
 </html>

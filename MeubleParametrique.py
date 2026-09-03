@@ -10,7 +10,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.15'
+ADDIN_VERSION = '1.18'
 
 app = None
 ui = None
@@ -2206,9 +2206,13 @@ def _panneaux_vue_face(layout):
     """Convertit layout['panels'] + layout['doors'] en une liste de
     volumes 2D+profondeur (x0,x1,y0,y1,z0,z1 en mm) pour les 3 vues de
     l'aperçu SVG (face/cote/dessus). Chaque entree : type
-    ('panneau'/'porte'/'tiroir'/'etagere'), nom, sens eventuel.
-    Tolerant : une entree individuelle mal formee est simplement
-    ignoree plutot que de faire echouer tout l'apercu."""
+    ('panneau'/'porte'/'tiroir'/'etagere'), nom, sens eventuel, et
+    poly_xz (contour reel en vue Face, mm) quand la coupe d'onglet
+    chanfreine ce panneau -- sinon vue Face utilise le rectangle
+    simple x0/x1/z0/z1. Tolerant : une entree individuelle mal
+    formee est simplement ignoree plutot que de faire echouer tout
+    l'apercu."""
+    coupes_par_panneau = _coupes_onglet_par_panneau(layout.get('miter_cuts'))
     rects = []
     for p in layout.get('panels', []):
         try:
@@ -2224,11 +2228,19 @@ def _panneaux_vue_face(layout):
                 typ = 'tiroir'
             else:
                 typ = 'panneau'
-            rects.append({
+            _rect = {
                 'x0': cm_to_mm(x0), 'x1': cm_to_mm(x1),
                 'y0': cm_to_mm(y0), 'y1': cm_to_mm(y1),
                 'z0': cm_to_mm(z0), 'z1': cm_to_mm(z1),
-                'type': typ, 'nom': nom})
+                'type': typ, 'nom': nom}
+            _coupes_ici = coupes_par_panneau.get(nom)
+            if _coupes_ici:
+                _poly_cm = _polygone_coupe_onglet(
+                    nom, x0, x1, z0, z1, _coupes_ici)
+                if _poly_cm:
+                    _rect['poly_xz'] = [
+                        [cm_to_mm(px), cm_to_mm(pz)] for px, pz in _poly_cm]
+            rects.append(_rect)
         except Exception:
             continue
     for d in layout.get('doors', []):
@@ -2244,6 +2256,97 @@ def _panneaux_vue_face(layout):
     return rects
 
 
+def _polygone_coupe_onglet(nom, x0, x1, z0, z1, cotes_coupes):
+    """Construit le contour (liste de points [x,z] mm) d'un panneau
+    Cote/Dessus/Dessous affecte par la coupe d'onglet, en repliquant
+    la geometrie du vrai chanfrein 45 degres (voir meuble_layout.py,
+    _segments_fusionnes_si_cache et le bloc coupe_onglet de
+    compute_layout) plutot qu'un simple rectangle. Renvoie None si ce
+    panneau n'est concerne par aucune coupe (cas normal : rectangle).
+    'cotes_coupes' : ensemble parmi {'haut_int','bas_int','gauche_int','droite_int'}
+    indiquant quels coins interieurs sont chanfreines pour CE panneau."""
+    if not cotes_coupes:
+        return None
+    if nom == 'Côté gauche':
+        # exterieur = x0 (jamais chanfreine), interieur = x1
+        ep = x1 - x0
+        pts = [(x0, z0)]
+        if 'bas_int' in cotes_coupes:
+            pts.append((x1, z0 + ep))
+        else:
+            pts.append((x1, z0))
+        if 'haut_int' in cotes_coupes:
+            pts.append((x1, z1 - ep))
+        else:
+            pts.append((x1, z1))
+        pts.append((x0, z1))
+        return pts
+    if nom == 'Côté droit':
+        # exterieur = x1, interieur = x0
+        ep = x1 - x0
+        pts = [(x1, z0)]
+        if 'bas_int' in cotes_coupes:
+            pts.append((x0, z0 + ep))
+        else:
+            pts.append((x0, z0))
+        if 'haut_int' in cotes_coupes:
+            pts.append((x0, z1 - ep))
+        else:
+            pts.append((x0, z1))
+        pts.append((x1, z1))
+        return pts
+    if nom == 'Dessus':
+        # exterieur = z1 (jamais chanfreine), interieur = z0
+        ep = z1 - z0
+        pts = [(x0, z1)]
+        if 'gauche_int' in cotes_coupes:
+            pts.append((x0 + ep, z0))
+        else:
+            pts.append((x0, z0))
+        if 'droite_int' in cotes_coupes:
+            pts.append((x1 - ep, z0))
+        else:
+            pts.append((x1, z0))
+        pts.append((x1, z1))
+        return pts
+    if nom == 'Dessous':
+        # exterieur = z0, interieur = z1
+        ep = z1 - z0
+        pts = [(x0, z0)]
+        if 'gauche_int' in cotes_coupes:
+            pts.append((x0 + ep, z1))
+        else:
+            pts.append((x0, z1))
+        if 'droite_int' in cotes_coupes:
+            pts.append((x1 - ep, z1))
+        else:
+            pts.append((x1, z1))
+        pts.append((x1, z0))
+        return pts
+    return None
+
+
+def _coupes_onglet_par_panneau(miter_cuts):
+    """Regroupe layout['miter_cuts'] par nom de panneau cible, sous
+    forme de codes simples ('haut_int'/'bas_int' pour les cotes,
+    'gauche_int'/'droite_int' pour dessus/dessous) exploitables par
+    _polygone_coupe_onglet."""
+    par_panneau = {}
+    for tri_xz, _y0, _y1, nom_coupe, cible in (miter_cuts or []):
+        if 'Haut' in nom_coupe:
+            code = 'haut_int'
+        elif 'Bas' in nom_coupe:
+            code = 'bas_int'
+        elif 'Gauche' in nom_coupe:
+            code = 'gauche_int'
+        elif 'Droit' in nom_coupe:
+            code = 'droite_int'
+        else:
+            continue
+        par_panneau.setdefault(cible, set()).add(code)
+    return par_panneau
+
+
 def update_apercu(inputs):
     """Recalcule le meuble a partir de l'etat ACTUEL du dialogue et
     envoie une vue de face simplifiee (SVG) a la palette d'apercu, si
@@ -2256,11 +2359,27 @@ def update_apercu(inputs):
             return
         values = collect_values_mm(inputs)
         layout = compute_layout(values)
+        panneaux = _panneaux_vue_face(layout)
+        # Bornes REELLES (mm), pas seulement L/H/P declares : un socle
+        # actif fait descendre certains panneaux (cotes, plinthe) en
+        # Z negatif, sous le bas theorique du caisson -- sans cela,
+        # ces panneaux restent hors du cadre SVG et ne s'affichent pas.
+        def _bornes(cle0, cle1, defaut_max):
+            vals = [p[cle0] for p in panneaux] + [p[cle1] for p in panneaux]
+            if not vals:
+                return 0.0, defaut_max
+            return min(0.0, min(vals)), max(defaut_max, max(vals))
+        _x0, _x1 = _bornes('x0', 'x1', values.get('largeur', 0))
+        _y0, _y1 = _bornes('y0', 'y1', values.get('profondeur', 0))
+        _z0, _z1 = _bornes('z0', 'z1', values.get('hauteur', 0))
         donnees = {
             'L_mm': values.get('largeur', 0),
             'H_mm': values.get('hauteur', 0),
             'P_mm': values.get('profondeur', 0),
-            'panneaux': _panneaux_vue_face(layout),
+            'X_min': _x0, 'X_max': _x1,
+            'Y_min': _y0, 'Y_max': _y1,
+            'Z_min': _z0, 'Z_max': _z1,
+            'panneaux': panneaux,
         }
         pal.sendInfoToHTML('apercu', json.dumps(donnees))
     except Exception:
@@ -2488,7 +2607,7 @@ def update_field_visibility(inputs):
 # memoire pour CETTE session ne peut pas etre change a chaud).
 UPDATE_FILES = (
     'MeubleParametrique.py', 'meuble_layout.py', 'meuble_geometry.py',
-    'meuble_persistence.py', 'apercu_meuble.html')
+    'meuble_persistence.py')
 
 
 def _extract_version(file_path):
@@ -2553,7 +2672,6 @@ def _check_and_apply_updates_drive():
                 continue
             if (not os.path.isfile(dst)
                     or os.path.getmtime(src) > os.path.getmtime(dst) + 1.0):
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copy2(src, dst)
                 updated.append(fname)
         except Exception:
@@ -2592,7 +2710,6 @@ def _check_and_apply_updates_github():
                 continue
             deja_synchro = etat.get(fname) == etag_distant
             if not deja_synchro:
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
                 with open(dst, 'wb') as f:
                     f.write(distant)
                 etat[fname] = etag_distant
@@ -2780,24 +2897,29 @@ class CreateInputChangedHandler(adsk.core.InputChangedEventHandler):
                 save_current_as_default(full_inputs)
             elif args.input.id == 'buttonApercu':
                 pal = ui.palettes.itemById(APERCU_PALETTE_ID)
+                _premiere_creation = not pal
                 if not pal:
                     pal = ui.palettes.add(
                         APERCU_PALETTE_ID, 'Aperçu meuble', APERCU_HTML_PATH,
                         True, True, True, 420, 560)
                     pal.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateRight
                 # Ne JAMAIS reassigner htmlFileURL apres la creation
-                # (constate : rend la palette vide, que ce soit juste
-                # apres la creation ou lors d'une reouverture). La
-                # page reste donc chargee UNE fois pour toute la
-                # session Fusion ; seules les DONNEES sont rafraichies
-                # via update_apercu (sendInfoToHTML), ce qui suffit
-                # pour l'usage normal. Un redemarrage complet de
-                # Fusion est necessaire pour reprendre une eventuelle
-                # modification du fichier apercu_meuble.html lui-meme.
-                if pal.isVisible:
+                # (constate : rend la palette vide, aussi bien juste
+                # apres la creation qu'a une reouverture). La page
+                # reste chargee UNE fois pour toute la session Fusion ;
+                # seules les DONNEES sont rafraichies via update_apercu.
+                if pal.isVisible and not _premiere_creation:
                     pal.isVisible = False
                 else:
                     pal.isVisible = True
+                    if _premiere_creation:
+                        # A la toute premiere creation, la page HTML
+                        # n'a pas encore fini de charger : un envoi
+                        # immediat de donnees est perdu (constate).
+                        # Court delai bloquant, une seule fois, pour
+                        # laisser le temps au navigateur interne de la
+                        # palette de s'initialiser.
+                        time.sleep(0.8)
                     update_apercu(full_inputs)
                 _btn_apercu = full_inputs.itemById('buttonApercu')
                 if _btn_apercu and _btn_apercu.value:
