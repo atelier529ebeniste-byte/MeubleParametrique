@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#f4f1ec; font-family: Segoe UI, Arial, sans-serif; overflow:hidden; }
+  #wrap { display:flex; flex-direction:column; height:100%; }
+  #titre { padding:6px 10px; font-size:13px; color:#4a3b2a; border-bottom:1px solid #d8cdb8; background:#efe8da; }
+  #titre b { color:#7a4a1f; }
+  #dims { float:right; color:#8a7a5f; }
+  #onglets { display:flex; border-bottom:1px solid #d8cdb8; background:#f8f5ee; align-items:center; }
+  .onglet { padding:5px 12px; font-size:12px; cursor:pointer; color:#8a7a5f; border-right:1px solid #e5ddca; user-select:none; }
+  .onglet.actif { background:#ffffff; color:#7a4a1f; font-weight:bold; }
+  #coupeZone { display:flex; align-items:center; gap:6px; padding:4px 10px; border-bottom:1px solid #d8cdb8; background:#f8f5ee; font-size:11px; color:#7a4a1f; }
+  #coupeSlider { flex:1; }
+  #coupeVal { min-width:60px; text-align:right; color:#8a7a5f; }
+  #coupeToggle { cursor:pointer; user-select:none; border:1px solid #d8cdb8; border-radius:3px; padding:2px 6px; background:#efe8da; }
+  #coupeToggle.actif { background:#7a4a1f; color:#fff; }
+  #exportPdf { cursor:pointer; user-select:none; border:1px solid #d8cdb8; border-radius:3px;
+               padding:2px 8px; background:#efe8da; color:#7a4a1f; margin-left:auto; }
+  #exportPdf:hover { background:#e0d6c0; }
+  @media print {
+    #onglets, #coupeZone { display:none; }
+    #svgHolder { overflow:visible; }
+    #svgInner { position:static !important; transform:none !important; }
+  }
+  #svgHolder { flex:1; overflow:hidden; position:relative; background:#ffffff; cursor:grab; }
+  #svgHolder.saisie { cursor:grabbing; }
+  #svgInner { position:absolute; top:0; left:0; transform-origin:0 0; }
+  #zoomInfo { position:absolute; right:6px; bottom:6px; font-size:11px; color:#a99; background:#ffffffcc; padding:2px 6px; border-radius:3px; pointer-events:none; }
+  .panneau { fill:#e3d3ae; fill-opacity:0.92; stroke:#8a6d3b; stroke-width:1.1; }
+  .porte { fill:#bcd4ec; fill-opacity:0.92; stroke:#3f6fa0; stroke-width:1.3; }
+  .tiroir { fill:#f0c79a; fill-opacity:0.92; stroke:#b8752f; stroke-width:1.3; }
+  .etagere { fill:#cfe0c9; fill-opacity:0.92; stroke:#5c8a52; stroke-width:1; }
+  .poignee { stroke:#333; stroke-width:2; stroke-linecap:round; }
+  #vide { padding:20px; color:#a99; text-align:center; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="titre"><b>Aperçu meuble</b><span id="dims"></span></div>
+  <div id="onglets">
+    <div class="onglet actif" data-vue="face">Face</div>
+    <div class="onglet" data-vue="cote">Côté</div>
+    <div class="onglet" data-vue="dessus">Dessus</div>
+  </div>
+  <div id="coupeZone">
+    <span id="coupeToggle">Coupe</span>
+    <input type="range" id="coupeSlider" min="0" max="1000" value="500" step="1" disabled>
+    <span id="coupeVal">-</span>
+    <span id="exportPdf" title="Télécharge un fichier SVG de la vue actuelle (ouvrable dans un navigateur, imprimable en PDF depuis là)">Exporter SVG</span>
+  </div>
+  <div id="svgHolder"><div id="vide">En attente des données du meuble…</div></div>
+</div>
+<script>
+var derniereDonnees = null;
+var vueActuelle = 'face';
+var vueChangee = false;
+var coupeActive = false;
+
+var coupeToggleEl = document.getElementById('coupeToggle');
+var coupeSliderEl = document.getElementById('coupeSlider');
+var coupeValEl = document.getElementById('coupeVal');
+coupeToggleEl.addEventListener('click', function() {
+  coupeActive = !coupeActive;
+  coupeToggleEl.classList.toggle('actif', coupeActive);
+  coupeSliderEl.disabled = !coupeActive;
+  if (coupeActive && derniereDonnees) {
+    var vv = VUES[vueActuelle];
+    var cMin = parseFloat(coupeSliderEl.min) || 0;
+    var cMax = parseFloat(coupeSliderEl.max) || 0;
+    var vDef = cMin;
+    if (vv.coupeDefaut === 'milieu') vDef = (cMin + cMax) / 2;
+    else if (vv.coupeDefaut === 'max') vDef = cMax;
+    coupeSliderEl.value = vDef;
+    coupeValEl.textContent = vv.coupeNom + ' : ' + Math.round(vDef) + ' mm';
+  }
+  if (derniereDonnees) dessiner(derniereDonnees);
+});
+coupeSliderEl.addEventListener('input', function() {
+  var vv = VUES[vueActuelle];
+  coupeValEl.textContent = vv.coupeNom + ' : ' + Math.round(parseFloat(coupeSliderEl.value)) + ' mm';
+  if (derniereDonnees) dessiner(derniereDonnees);
+});
+document.getElementById('exportPdf').addEventListener('click', function() {
+  // window.print() ne fonctionne pas dans la palette CEF de Fusion
+  // (teste et confirme sans effet) : on telecharge a la place un
+  // fichier .svg autonome (styles inlines) de la vue actuelle, que
+  // l'utilisateur peut ouvrir dans n'importe quel navigateur et
+  // imprimer en PDF depuis la.
+  var svgEl = document.querySelector('#svgInner svg');
+  if (!svgEl) {
+    alert('Aucun aperçu à exporter pour le moment.');
+    return;
+  }
+  try {
+    var clone = svgEl.cloneNode(true);
+    clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+    // Styles CSS des classes (.panneau/.porte/...) inlines dans le
+    // clone, car un fichier .svg autonome ouvert hors de cette page
+    // n'a plus acces a la feuille de style <style> du <head>.
+    var stylesInline = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+    stylesInline.textContent =
+      '.panneau{fill:#e3d3ae;fill-opacity:0.92;stroke:#8a6d3b;stroke-width:1.1;}' +
+      '.porte{fill:#bcd4ec;fill-opacity:0.92;stroke:#3f6fa0;stroke-width:1.3;}' +
+      '.tiroir{fill:#f0c79a;fill-opacity:0.92;stroke:#b8752f;stroke-width:1.3;}' +
+      '.etagere{fill:#cfe0c9;fill-opacity:0.92;stroke:#5c8a52;stroke-width:1;}' +
+      '.poignee{stroke:#333;stroke-width:2;stroke-linecap:round;}';
+    clone.insertBefore(stylesInline, clone.firstChild);
+    var svgTexte = '<?xml version="1.0" encoding="UTF-8"?>\n' + clone.outerHTML;
+    // Le telechargement Blob classique ne fonctionne pas non plus
+    // dans cette palette (teste, sans effet) : on passe par le canal
+    // officiel JS->Python de Fusion, qui ouvre une vraie boite de
+    // dialogue Enregistrer sous cote Python.
+    if (window.adsk && typeof adsk.fusionSendData === 'function') {
+      adsk.fusionSendData('exportSvg', svgTexte);
+    } else {
+      alert("Le canal d'export vers Fusion n'est pas disponible dans cette palette.");
+    }
+  } catch (e) {
+    alert('Export SVG indisponible dans cette palette : ' + e.message);
+  }
+});
+
+document.querySelectorAll('.onglet').forEach(function(el) {
+  el.addEventListener('click', function() {
+    document.querySelectorAll('.onglet').forEach(function(o) { o.classList.remove('actif'); });
+    el.classList.add('actif');
+    vueActuelle = el.getAttribute('data-vue');
+    vueChangee = true;
+    zoom = 1; panX = 0; panY = 0;
+    if (derniereDonnees) dessiner(derniereDonnees);
+  });
+});
+
+// Definit, pour chaque vue, quels axes des donnees (mm) servent d'abscisse
+// et d'ordonnee SVG, et si l'ordonnee doit etre inversee (Z et Y sont
+// mesures depuis le bas/avant, SVG grandit vers le bas/droite).
+// coupeCle/coupeMaxCle : sur quel axe (cache, non affiche par cette
+// vue) porte le plan de coupe, et quelle dimension totale du meuble
+// sert de max au curseur.
+// axMinCle/axMaxCle et ayMinCle/ayMaxCle : bornes REELLES (mm, voir
+// X_min/X_max/Y_min/Y_max/Z_min/Z_max envoyes par Python) de chaque
+// axe affiche -- pas seulement 0..dimension declaree, pour bien
+// couvrir les elements qui debordent (ex. socle en Z negatif).
+// coupeMinCle/coupeMaxCle : memes bornes reelles, pour l'axe cache
+// utilise par le curseur de coupe.
+// coupeDefaut : position initiale du curseur de coupe pour cette
+// vue -- 'min' (0, tout a l'avant/a gauche/en bas selon l'axe),
+// 'milieu' (au centre), ou 'max' (tout au fond/a droite/en haut).
+var VUES = {
+  face:   { axMinCle: 'X_min', axMaxCle: 'X_max', ayMinCle: 'Z_min', ayMaxCle: 'Z_max',
+            ax0: 'x0', ax1: 'x1', ay0: 'z0', ay1: 'z1', inverseY: true,
+            coupeCle0: 'y0', coupeCle1: 'y1', coupeMinCle: 'Y_min', coupeMaxCle: 'Y_max', coupeNom: 'Profondeur',
+            coupeDefaut: 'min' },
+  cote:   { axMinCle: 'Y_min', axMaxCle: 'Y_max', ayMinCle: 'Z_min', ayMaxCle: 'Z_max',
+            ax0: 'y0', ax1: 'y1', ay0: 'z0', ay1: 'z1', inverseY: true,
+            coupeCle0: 'x0', coupeCle1: 'x1', coupeMinCle: 'X_min', coupeMaxCle: 'X_max', coupeNom: 'Largeur',
+            coupeDefaut: 'milieu' },
+  dessus: { axMinCle: 'X_min', axMaxCle: 'X_max', ayMinCle: 'Y_min', ayMaxCle: 'Y_max',
+            ax0: 'x0', ax1: 'x1', ay0: 'y0', ay1: 'y1', inverseY: true,
+            coupeCle0: 'z0', coupeCle1: 'z1', coupeMinCle: 'Z_min', coupeMaxCle: 'Z_max', coupeNom: 'Hauteur',
+            coupeDefaut: 'max' }
+};
+
+function dessiner(donnees) {
+  var v = VUES[vueActuelle];
+  var nouveauMeuble = !derniereDonnees || derniereDonnees.P_mm !== donnees.P_mm
+    || derniereDonnees.L_mm !== donnees.L_mm || derniereDonnees.H_mm !== donnees.H_mm;
+  derniereDonnees = donnees;
+  if (nouveauMeuble || vueChangee) {
+    var coupeMin = donnees[v.coupeMinCle] || 0;
+    var coupeMax = donnees[v.coupeMaxCle] || 500;
+    coupeSliderEl.min = coupeMin;
+    coupeSliderEl.max = coupeMax;
+    var valDefaut = coupeMin;
+    if (v.coupeDefaut === 'milieu') valDefaut = (coupeMin + coupeMax) / 2;
+    else if (v.coupeDefaut === 'max') valDefaut = coupeMax;
+    coupeSliderEl.value = valDefaut;
+    coupeValEl.textContent = v.coupeNom + ' : ' + Math.round(valDefaut) + ' mm';
+    vueChangee = false;
+  }
+  var holder = document.getElementById('svgHolder');
+  // Bornes REELLES (mm) de l'axe horizontal/vertical affiche par
+  // cette vue (pas seulement 0..dimension declaree) : un socle actif
+  // fait descendre certains panneaux en Z negatif, par exemple.
+  var axMin = donnees[v.axMinCle] || 0, axMax = donnees[v.axMaxCle] || 0;
+  var ayMin = donnees[v.ayMinCle] || 0, ayMax = donnees[v.ayMaxCle] || 0;
+  var L = axMax - axMin, H = ayMax - ayMin;
+  document.getElementById('dims').textContent =
+    ' ' + Math.round(donnees.L_mm) + ' x ' + Math.round(donnees.H_mm) + ' x ' + Math.round(donnees.P_mm) + ' mm';
+  if (!L || !H) { holder.innerHTML = '<div id="vide">Dimensions invalides</div>'; return; }
+  var marge = 30;
+  var maxW = 900, maxH = 700;
+  var echelle = Math.min((maxW - 2*marge) / L, (maxH - 2*marge) / H);
+  var svgW = L * echelle + 2*marge;
+  var svgH = H * echelle + 2*marge;
+
+  function ax(val) { return marge + (v.inverseX ? (axMax - val) : (val - axMin)) * echelle; }
+  function ay(val) { return v.inverseY ? (marge + (ayMax - val) * echelle) : (marge + (val - ayMin) * echelle); }
+
+  var svg = '<svg width="' + svgW + '" height="' + svgH + '" viewBox="0 0 ' + svgW + ' ' + svgH + '">';
+
+  var coupeVal = parseFloat(document.getElementById('coupeSlider').value);
+  var elements = donnees.panneaux || [];
+  if (coupeActive) {
+    elements = elements.filter(function(p) {
+      return p[v.coupeCle0] <= coupeVal && coupeVal <= p[v.coupeCle1];
+    });
+  }
+  elements.forEach(function(p) {
+    var cls = p.type || 'panneau';
+    // Coupe d'onglet : contour reel (parallelogramme/trapeze) au lieu
+    // du rectangle simple, uniquement en vue Face (le chanfrein ne
+    // concerne que le plan X-Z).
+    if (p.poly_xz && vueActuelle === 'face') {
+      var ptsTxt = p.poly_xz.map(function(pt) {
+        return ax(pt[0]) + ',' + ay(pt[1]);
+      }).join(' ');
+      svg += '<polygon class="' + cls + '" points="' + ptsTxt + '"><title>' + (p.nom||'') + '</title></polygon>';
+      return;
+    }
+    var a0 = ax(p[v.ax0]), a1 = ax(p[v.ax1]);
+    var b0 = ay(p[v.ay0]), b1 = ay(p[v.ay1]);
+    var x = Math.min(a0, a1), w = Math.max(1, Math.abs(a1 - a0));
+    var y = Math.min(b0, b1), h = Math.max(1, Math.abs(b1 - b0));
+    svg += '<rect class="' + cls + '" x="' + x + '" y="' + y + '" width="' + w + '" height="' + h + '"><title>' + (p.nom||'') + '</title></rect>';
+    if ((cls === 'porte' || cls === 'tiroir') && vueActuelle === 'face') {
+      var cy = y + h / 2;
+      var hx = (p.sens === 'gauche') ? x + w - 6 : (p.sens === 'droite') ? x + 6 : x + w / 2;
+      svg += '<line class="poignee" x1="' + hx + '" y1="' + (cy-8) + '" x2="' + hx + '" y2="' + (cy+8) + '"/>';
+    }
+  });
+
+  svg += '</svg>';
+  holder.innerHTML = '<div id="svgInner">' + svg + '</div><div id="zoomInfo"></div>';
+  appliquerTransform();
+}
+
+// --- Zoom / panoramique -------------------------------------------
+var zoom = 1, panX = 0, panY = 0;
+var enTrainDeGlisser = false, glisserX0 = 0, glisserY0 = 0, panX0 = 0, panY0 = 0;
+
+function appliquerTransform() {
+  var inner = document.getElementById('svgInner');
+  if (!inner) return;
+  inner.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + zoom + ')';
+  var info = document.getElementById('zoomInfo');
+  if (info) info.textContent = Math.round(zoom * 100) + ' %';
+}
+
+function reinitialiserVue() {
+  zoom = 1; panX = 0; panY = 0;
+  appliquerTransform();
+}
+
+var svgHolderEl = document.getElementById('svgHolder');
+svgHolderEl.addEventListener('wheel', function(e) {
+  e.preventDefault();
+  var rect = svgHolderEl.getBoundingClientRect();
+  var sourisX = e.clientX - rect.left, sourisY = e.clientY - rect.top;
+  var facteur = (e.deltaY < 0) ? 1.15 : (1 / 1.15);
+  var nouveauZoom = Math.min(20, Math.max(0.2, zoom * facteur));
+  // Garde le point sous la souris fixe pendant le zoom.
+  panX = sourisX - (sourisX - panX) * (nouveauZoom / zoom);
+  panY = sourisY - (sourisY - panY) * (nouveauZoom / zoom);
+  zoom = nouveauZoom;
+  appliquerTransform();
+}, { passive: false });
+
+svgHolderEl.addEventListener('mousedown', function(e) {
+  enTrainDeGlisser = true;
+  svgHolderEl.classList.add('saisie');
+  glisserX0 = e.clientX; glisserY0 = e.clientY;
+  panX0 = panX; panY0 = panY;
+});
+window.addEventListener('mousemove', function(e) {
+  if (!enTrainDeGlisser) return;
+  panX = panX0 + (e.clientX - glisserX0);
+  panY = panY0 + (e.clientY - glisserY0);
+  appliquerTransform();
+});
+window.addEventListener('mouseup', function() {
+  enTrainDeGlisser = false;
+  svgHolderEl.classList.remove('saisie');
+});
+svgHolderEl.addEventListener('dblclick', reinitialiserVue);
+
+window.fusionJavaScriptHandler = {
+  handle: function(action, data) {
+    try {
+      if (action === 'apercu') {
+        dessiner(JSON.parse(data));
+      }
+      return 'OK';
+    } catch (e) {
+      return 'ERREUR: ' + e.message;
+    }
+  }
+};
+</script>
+</body>
+</html>
