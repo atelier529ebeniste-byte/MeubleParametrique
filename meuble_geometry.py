@@ -130,23 +130,22 @@ def _largest_profile(sketch):
     return best
 
 
-def cut_miter_wedge_xz(comp, target_body, tri_xz, y0, y1, name):
-    """Coupe un prisme triangulaire (coupe d'onglet 45 degres) dans
-    'target_body' : profil triangulaire 'tri_xz' = liste de 3 (x,z)
-    (cm), extrude sur toute la plage Y [y0,y1] (profondeur). Plan
+def cut_polygon_xz(comp, target_body, poly_xz, y0, y1, name):
+    """Coupe un prisme (profil polygonal quelconque, >= 3 points)
+    dans 'target_body' : 'poly_xz' = liste de (x,z) (cm), extrude
+    sur toute la plage Y [y0,y1] (profondeur). Plan
     xZConstructionPlane, mapping mesure empiriquement : esquisse
-    (u,v) -> monde (x=u, y=0, z=-v)."""
+    (u,v) -> monde (x=u, y=0, z=-v). Generalisation de l'ancienne
+    cut_miter_wedge_xz (triangle uniquement) a un polygone
+    quelconque (rectangle pour une encoche, etc)."""
     def uv(x, z):
         return adsk.core.Point3D.create(x, -z, 0)
     sketch = comp.sketches.add(comp.xZConstructionPlane)
     sketch.name = name
     lines = sketch.sketchCurves.sketchLines
-    p1 = uv(*tri_xz[0])
-    p2 = uv(*tri_xz[1])
-    p3 = uv(*tri_xz[2])
-    lines.addByTwoPoints(p1, p2)
-    lines.addByTwoPoints(p2, p3)
-    lines.addByTwoPoints(p3, p1)
+    pts = [uv(x, z) for x, z in poly_xz]
+    for i in range(len(pts)):
+        lines.addByTwoPoints(pts[i], pts[(i + 1) % len(pts)])
     profile = _largest_profile(sketch)
     extrudes = comp.features.extrudeFeatures
     ext_input = extrudes.createInput(profile, adsk.fusion.FeatureOperations.CutFeatureOperation)
@@ -155,6 +154,12 @@ def cut_miter_wedge_xz(comp, target_body, tri_xz, y0, y1, name):
         adsk.core.ValueInput.createByReal(y0))
     ext_input.setDistanceExtent(False, adsk.core.ValueInput.createByReal(y1 - y0))
     extrudes.add(ext_input)
+
+
+def cut_miter_wedge_xz(comp, target_body, tri_xz, y0, y1, name):
+    """Alias retro-compatible de cut_polygon_xz (coupe d'onglet
+    45 degres, profil triangulaire)."""
+    cut_polygon_xz(comp, target_body, tri_xz, y0, y1, name)
 
 
 def _supprimer_esquisses_homonymes(comp, name):
@@ -700,10 +705,10 @@ def build_meuble_body(comp, values, thickness_params=None, progress=None):
     # Coupes d'onglet 45deg (cotes/dessus/dessous) : effectuees une
     # fois tous les panneaux en place.
     for mc in layout.get('miter_cuts', []):
-        tri_xz, y0, y1, mc_name, mc_target = mc
+        poly_xz, y0, y1, mc_name, mc_target = mc
         mc_target_body = bodies_by_name.get(mc_target)
         if mc_target_body:
-            cut_miter_wedge_xz(comp, mc_target_body, tri_xz, y0, y1, mc_name)
+            cut_polygon_xz(comp, mc_target_body, poly_xz, y0, y1, mc_name)
     # Perçages (Lamello + système 32) : effectués une fois tous les panneaux
     # en place, pour creuser dans la matière déjà présente (montants/
     # traverses). Regroupés par (axe, plan, sens, diamètre, profondeur)

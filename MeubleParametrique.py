@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.33'
+ADDIN_VERSION = '1.37'
 
 app = None
 ui = None
@@ -349,6 +349,12 @@ def apply_meuble_selection(inputs, override_values=None):
     chk_socle = inputs.itemById('checkSocleActif')
     if chk_socle and 'socle_actif' in values:
         chk_socle.value = bool(values['socle_actif'])
+    dd_pose_socle = inputs.itemById('dropdownPoseSocle')
+    if dd_pose_socle:
+        _pose_label = ('En applique' if values.get('pose_plinthe') == 'applique'
+                       else 'Encastré')
+        for _li in dd_pose_socle.listItems:
+            _li.isSelected = (_li.name == _pose_label)
     chk_onglet = inputs.itemById('checkCoupeOnglet')
     if chk_onglet and 'coupe_onglet' in values:
         chk_onglet.value = bool(values['coupe_onglet'])
@@ -1967,6 +1973,14 @@ def add_meuble_fields(inputs, cur_mm_func):
                      mm_to_cm(cur_mm_func('socle', 20)), 0, 300)
     add_value_field(gs, 'champRetraitPlinthe', 'Retrait plinthe',
                      mm_to_cm(cur_mm_func('retrait_plinthe', 5)), 0, 500)
+    _pose_socle_actuel = cur_mm_func('pose_plinthe', 'encastre')
+    dd_pose_socle = gs.addDropDownCommandInput(
+        'dropdownPoseSocle', 'Type de pose',
+        adsk.core.DropDownStyles.TextListDropDownStyle)
+    dd_pose_socle.listItems.add(
+        'Encastré', _pose_socle_actuel != 'applique')
+    dd_pose_socle.listItems.add(
+        'En applique', _pose_socle_actuel == 'applique')
 
     # --- Volet Montant intermédiaire (deplace hors de Caisson) ----------
     tab_montants = inputs.addTabCommandInput('tabMontants', 'Montant intermédiaire')
@@ -2502,6 +2516,12 @@ def collect_values_mm(inputs):
     values['socle_actif'] = chk_socle.value if chk_socle else True
     values['socle'] = val_mm('champSocle', 20)
     values['retrait_plinthe'] = val_mm('champRetraitPlinthe', 5)
+    dd_pose_socle = inputs.itemById('dropdownPoseSocle')
+    values['pose_plinthe'] = (
+        'applique'
+        if dd_pose_socle and dd_pose_socle.selectedItem
+        and dd_pose_socle.selectedItem.name == 'En applique'
+        else 'encastre')
     chk_onglet = inputs.itemById('checkCoupeOnglet')
     values['coupe_onglet'] = chk_onglet.value if chk_onglet else False
 

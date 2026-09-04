@@ -855,7 +855,42 @@ def compute_layout(values):
     # socle (sinon il n'y a pas d'espace sous le caisson pour la loger).
     if Soc > 1e-6:
         retrait_plinthe = mm_to_cm(values.get('retrait_plinthe', 5))
-        panels.append(('XZ', Ep, L - Ep, -Soc, 0, retrait_plinthe, Ep, 'Plinthe', 'EpPanneau'))
+        # 'Encastre' (par defaut) : la plinthe se loge ENTRE les
+        # montants/cotes (largeur interieure, comme un panneau XZ
+        # classique), reculee de sa face AVANT par 'retrait_plinthe'
+        # (0 = affleurant a l'avant du caisson).
+        # 'En applique' : la plinthe passe DEVANT les montants et
+        # les recouvre, sur toute la largeur. Reference sur sa face
+        # ARRIERE (celle qui touche les montants) : 0 = affleurante
+        # contre l'avant des montants, la plinthe se projetant
+        # entierement vers l'avant (Y negatif) sur son epaisseur.
+        if values.get('pose_plinthe') == 'applique':
+            _plinthe_x0, _plinthe_x1 = 0, L
+            _plinthe_y0 = retrait_plinthe - Ep
+            if retrait_plinthe > 1e-6:
+                # La face arriere de la plinthe (Y=retrait_plinthe)
+                # empiete alors dans la matiere des montants (qui
+                # commencent a Y=0) sur la zone du socle : on
+                # decoupe une encoche rectangulaire pour que la
+                # plinthe puisse s'y loger. Coordonnees Z en
+                # 'FINAL' (0..Soc), PAS en brut (-Soc..0) : les
+                # miter_cuts ciblant un cote ne passent JAMAIS par
+                # le decalage +Soc applique en fin de fonction
+                # (reserve aux cibles Dessus/Dessous), alors que le
+                # panneau Cote, lui, est deja decale a ce stade.
+                miter_cuts.append((
+                    [(0, 0), (Ep, 0), (Ep, Soc), (0, Soc)],
+                    0, retrait_plinthe,
+                    'Côté gauche Encoche Plinthe', 'Côté gauche'))
+                miter_cuts.append((
+                    [(L - Ep, 0), (L, 0), (L, Soc), (L - Ep, Soc)],
+                    0, retrait_plinthe,
+                    'Côté droit Encoche Plinthe', 'Côté droit'))
+        else:
+            _plinthe_x0, _plinthe_x1 = Ep, L - Ep
+            _plinthe_y0 = retrait_plinthe
+        panels.append(('XZ', _plinthe_x0, _plinthe_x1, -Soc, 0, _plinthe_y0, Ep,
+                       'Plinthe', 'EpPanneau'))
 
     # --- Montants intermédiaires (renforts verticaux entre dessus et dessous,
     # même profondeur que les côtés). Par défaut, chaque axe de montant est
