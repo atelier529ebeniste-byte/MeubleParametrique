@@ -16,6 +16,21 @@
   #coupeVal { min-width:60px; text-align:right; color:#8a7a5f; }
   #coupeToggle { cursor:pointer; user-select:none; border:1px solid #d8cdb8; border-radius:3px; padding:2px 6px; background:#efe8da; }
   #coupeToggle.actif { background:#7a4a1f; color:#fff; }
+  #listeTable { width:100%; border-collapse:collapse; font-size:12px; }
+  #listeTable th, #listeTable td { border-bottom:1px solid #e5ddca; padding:4px 8px; text-align:left; }
+  #listeTable th { cursor:pointer; user-select:none; white-space:nowrap; }
+  #listeTable th:hover { background:#efe8da; }
+  #listeTable th .fleche { color:#b8a97e; font-size:10px; margin-left:3px; }
+  #listeTable th { background:#f8f5ee; color:#7a4a1f; position:sticky; top:0; }
+  #listeTable tr:nth-child(even) td { background:#faf8f2; }
+  #listeTable td.num { text-align:left; font-variant-numeric:tabular-nums; }
+  #listeHolder { flex:1; overflow:auto; background:#ffffff; }
+  #listeControles { display:none; align-items:center; gap:6px; padding:4px 10px;
+                    border-bottom:1px solid #d8cdb8; background:#f8f5ee; font-size:11px; color:#7a4a1f; }
+  #filtreCategorie { flex:0 0 auto; }
+  #exportCsv { cursor:pointer; user-select:none; border:1px solid #d8cdb8; border-radius:3px;
+               padding:2px 8px; background:#efe8da; color:#7a4a1f; margin-left:auto; }
+  #exportCsv:hover { background:#e0d6c0; }
   #exportPdf { cursor:pointer; user-select:none; border:1px solid #d8cdb8; border-radius:3px;
                padding:2px 8px; background:#efe8da; color:#7a4a1f; margin-left:auto; }
   #exportPdf:hover { background:#e0d6c0; }
@@ -43,6 +58,7 @@
     <div class="onglet actif" data-vue="face">Face</div>
     <div class="onglet" data-vue="cote">Côté</div>
     <div class="onglet" data-vue="dessus">Dessus</div>
+    <div class="onglet" data-vue="liste">Liste</div>
   </div>
   <div id="coupeZone">
     <span id="coupeToggle">Coupe</span>
@@ -50,7 +66,18 @@
     <span id="coupeVal">-</span>
     <span id="exportPdf" title="Télécharge un fichier SVG de la vue actuelle (ouvrable dans un navigateur, imprimable en PDF depuis là)">Exporter SVG</span>
   </div>
+  <div id="listeControles">
+    <select id="filtreCategorie">
+      <option value="">Toutes catégories</option>
+      <option value="panneau">Panneaux</option>
+      <option value="porte">Portes</option>
+      <option value="tiroir">Façades tiroir</option>
+      <option value="etagere">Étagères</option>
+    </select>
+    <span id="exportCsv" title="Télécharge la liste des pièces au format CSV (tableur)">Exporter CSV</span>
+  </div>
   <div id="svgHolder"><div id="vide">En attente des données du meuble…</div></div>
+  <div id="listeHolder" style="display:none;"></div>
 </div>
 <script>
 var derniereDonnees = null;
@@ -129,6 +156,9 @@ document.querySelectorAll('.onglet').forEach(function(el) {
     vueActuelle = el.getAttribute('data-vue');
     vueChangee = true;
     zoom = 1; panX = 0; panY = 0;
+    var estListe = (vueActuelle === 'liste');
+    document.getElementById('coupeZone').style.display = estListe ? 'none' : 'flex';
+    document.getElementById('listeControles').style.display = estListe ? 'flex' : 'none';
     if (derniereDonnees) dessiner(derniereDonnees);
   });
 });
@@ -163,7 +193,118 @@ var VUES = {
             coupeDefaut: 'max' }
 };
 
+function _dimensionsPiece(p) {
+  var dx = Math.abs((p.x1 || 0) - (p.x0 || 0));
+  var dy = Math.abs((p.y1 || 0) - (p.y0 || 0));
+  var dz = Math.abs((p.z1 || 0) - (p.z0 || 0));
+  var dims = [dx, dy, dz].sort(function(a, b) { return a - b; });
+  return { epaisseur: dims[0], largeur: dims[1], longueur: dims[2] };
+}
+
+var triColonne = 'nom';
+var triAscendant = true;
+var COLONNES_LISTE = [
+  { cle: 'nom', label: 'Nom' },
+  { cle: 'longueur', label: 'Longueur (mm)' },
+  { cle: 'largeur', label: 'Largeur (mm)' },
+  { cle: 'epaisseur', label: 'Épaisseur (mm)' }
+];
+
+function _valeurTri(p, cle) {
+  if (cle === 'nom') return (p.nom || '').toLowerCase();
+  return _dimensionsPiece(p)[cle];
+}
+
+function dessinerListe(donnees) {
+  derniereDonnees = donnees;
+  document.getElementById('svgHolder').style.display = 'none';
+  var holder = document.getElementById('listeHolder');
+  holder.style.display = 'block';
+  document.getElementById('dims').textContent =
+    ' ' + Math.round(donnees.L_mm) + ' x ' + Math.round(donnees.H_mm) + ' x ' + Math.round(donnees.P_mm) + ' mm';
+  var filtreVal = document.getElementById('filtreCategorie').value;
+  var pieces = donnees.panneaux || [];
+  if (filtreVal) {
+    pieces = pieces.filter(function(p) { return (p.type || 'panneau') === filtreVal; });
+  }
+  pieces = pieces.slice().sort(function(a, b) {
+    var va = _valeurTri(a, triColonne), vb = _valeurTri(b, triColonne);
+    var cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
+    return triAscendant ? cmp : -cmp;
+  });
+  var html = '<table id="listeTable"><thead><tr>';
+  COLONNES_LISTE.forEach(function(col) {
+    var fleche = (triColonne === col.cle) ? ('<span class="fleche">' + (triAscendant ? '▲' : '▼') + '</span>') : '';
+    html += '<th data-cle="' + col.cle + '">' + col.label + fleche + '</th>';
+  });
+  html += '</tr></thead><tbody>';
+  pieces.forEach(function(p) {
+    var d = _dimensionsPiece(p);
+    html += '<tr><td>' + (p.nom || '') + '</td>' +
+      '<td class="num">' + Math.round(d.longueur) + '</td>' +
+      '<td class="num">' + Math.round(d.largeur) + '</td>' +
+      '<td class="num">' + Math.round(d.epaisseur) + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  holder.innerHTML = pieces.length ? html : '<div id="vide">Aucune pièce dans cette catégorie.</div>';
+  holder.querySelectorAll('th').forEach(function(th) {
+    th.addEventListener('click', function() {
+      var cle = th.getAttribute('data-cle');
+      if (triColonne === cle) {
+        triAscendant = !triAscendant;
+      } else {
+        triColonne = cle;
+        triAscendant = true;
+      }
+      dessinerListe(derniereDonnees);
+    });
+  });
+}
+
+document.getElementById('filtreCategorie').addEventListener('change', function() {
+  if (derniereDonnees) dessinerListe(derniereDonnees);
+});
+
+document.getElementById('exportCsv').addEventListener('click', function() {
+  if (!derniereDonnees) {
+    alert('Aucune donnée à exporter pour le moment.');
+    return;
+  }
+  var filtreVal = document.getElementById('filtreCategorie').value;
+  var pieces = derniereDonnees.panneaux || [];
+  if (filtreVal) {
+    pieces = pieces.filter(function(p) { return (p.type || 'panneau') === filtreVal; });
+  }
+  pieces = pieces.slice().sort(function(a, b) {
+    var va = _valeurTri(a, triColonne), vb = _valeurTri(b, triColonne);
+    var cmp = (va < vb) ? -1 : (va > vb) ? 1 : 0;
+    return triAscendant ? cmp : -cmp;
+  });
+  function champCsv(v) {
+    var s = String(v);
+    return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  var lignes = ['Nom;Longueur (mm);Largeur (mm);Épaisseur (mm)'];
+  pieces.forEach(function(p) {
+    var d = _dimensionsPiece(p);
+    lignes.push([champCsv(p.nom || ''), Math.round(d.longueur),
+      Math.round(d.largeur), Math.round(d.epaisseur)].join(';'));
+  });
+  var texteCsv = '\uFEFF' + lignes.join('\r\n');
+  if (window.adsk && typeof adsk.fusionSendData === 'function') {
+    adsk.fusionSendData('exportCsv', texteCsv);
+  } else {
+    alert("Le canal d'export vers Fusion n'est pas disponible dans cette palette.");
+  }
+});
+
 function dessiner(donnees) {
+  if (vueActuelle === 'liste') {
+    dessinerListe(donnees);
+    return;
+  }
+  document.getElementById('listeHolder').style.display = 'none';
+  document.getElementById('svgHolder').style.display = 'block';
   var v = VUES[vueActuelle];
   var nouveauMeuble = !derniereDonnees || derniereDonnees.P_mm !== donnees.P_mm
     || derniereDonnees.L_mm !== donnees.L_mm || derniereDonnees.H_mm !== donnees.H_mm;

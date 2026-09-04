@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.37'
+ADDIN_VERSION = '1.40'
 
 app = None
 ui = None
@@ -2429,26 +2429,38 @@ class ApercuHTMLEventHandler(adsk.core.HTMLEventHandler):
 
     def notify(self, args):
         try:
-            if args.action != 'exportSvg':
-                return
             if not ui:
                 return
-            dlg = ui.createFileDialog()
-            dlg.title = 'Enregistrer l’aperçu SVG'
-            dlg.filter = 'Fichier SVG (*.svg)'
-            dlg.filterIndex = 0
-            dlg.initialFilename = 'apercu_meuble.svg'
-            if dlg.showSave() == adsk.core.DialogResults.DialogOK:
-                chemin = dlg.filename
-                if not chemin.lower().endswith('.svg'):
-                    chemin += '.svg'
-                with io.open(chemin, 'w', encoding='utf-8') as f:
-                    f.write(args.data)
-                ui.messageBox('Aperçu enregistré :\n{}'.format(chemin))
+            if args.action == 'exportSvg':
+                dlg = ui.createFileDialog()
+                dlg.title = 'Enregistrer l’aperçu SVG'
+                dlg.filter = 'Fichier SVG (*.svg)'
+                dlg.filterIndex = 0
+                dlg.initialFilename = 'apercu_meuble.svg'
+                if dlg.showSave() == adsk.core.DialogResults.DialogOK:
+                    chemin = dlg.filename
+                    if not chemin.lower().endswith('.svg'):
+                        chemin += '.svg'
+                    with io.open(chemin, 'w', encoding='utf-8') as f:
+                        f.write(args.data)
+                    ui.messageBox('Aperçu enregistré :\n{}'.format(chemin))
+            elif args.action == 'exportCsv':
+                dlg = ui.createFileDialog()
+                dlg.title = 'Enregistrer la liste des pièces (CSV)'
+                dlg.filter = 'Fichier CSV (*.csv)'
+                dlg.filterIndex = 0
+                dlg.initialFilename = 'liste_pieces.csv'
+                if dlg.showSave() == adsk.core.DialogResults.DialogOK:
+                    chemin = dlg.filename
+                    if not chemin.lower().endswith('.csv'):
+                        chemin += '.csv'
+                    with io.open(chemin, 'w', encoding='utf-8') as f:
+                        f.write(args.data)
+                    ui.messageBox('Liste enregistrée :\n{}'.format(chemin))
         except Exception:
             if ui:
                 ui.messageBox(
-                    "Erreur export SVG :\n{}".format(traceback.format_exc()))
+                    "Erreur export :\n{}".format(traceback.format_exc()))
 
 
 def update_apercu(inputs):
