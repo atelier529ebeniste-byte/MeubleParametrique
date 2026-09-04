@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.31'
+ADDIN_VERSION = '1.33'
 
 app = None
 ui = None
@@ -2229,7 +2229,7 @@ def add_meuble_fields(inputs, cur_mm_func):
         pass
     _version_detectee = _extract_version(
         os.path.join(SCRIPT_DIR, 'MeubleParametrique.py')) or 'inconnue'
-    if _version_detectee != ADDIN_VERSION:
+    if _version_tuple(_version_detectee) > _version_tuple(ADDIN_VERSION):
         inputs.addTextBoxCommandInput(
             'textMiseAJour', '',
             'Mise à jour détectée : V ' + _version_detectee + '\n\n'
@@ -2711,6 +2711,18 @@ def _extract_version(file_path):
         return m.group(1) if m else None
     except Exception:
         return None
+
+
+def _version_tuple(v):
+    """Convertit 'N.NN' en tuple d'entiers pour comparaison numerique
+    correcte (une comparaison de chaines serait fausse: '1.9' > '1.14'
+    en ordre lexicographique). Renvoie (0,) si illisible."""
+    if not v:
+        return (0,)
+    try:
+        return tuple(int(p) for p in v.split('.'))
+    except Exception:
+        return (0,)
 
 
 def _find_drive_update_folder():
