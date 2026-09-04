@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.40'
+ADDIN_VERSION = '1.41'
 
 app = None
 ui = None
@@ -2965,7 +2965,8 @@ class CreateCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             if _version_disque_ici and _version_disque_ici != ADDIN_VERSION:
                 _libelle_version += ' (Mise à jour disponible)'
             _txt_version = inputs.addTextBoxCommandInput(
-                'textVersionAddin', '', _libelle_version, 1, True)
+                'textVersionAddin', '',
+                '<div align="center">' + _libelle_version + '</div>', 1, True)
 
             dd_meuble = inputs.addDropDownCommandInput(
                 'dropdownMeuble', 'Meuble', adsk.core.DropDownStyles.TextListDropDownStyle)
