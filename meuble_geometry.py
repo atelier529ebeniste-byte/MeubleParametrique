@@ -296,6 +296,29 @@ def cut_groove_x(comp, x_plane, sign, y0, y1, z0, z1, depth, name, target_body=N
     extrudes.add(ext_input)
 
 
+def cut_groove_z(comp, z_plane, sign, x0, x1, y0, y1, depth, name, target_body=None):
+    """Usine une rainure rectangulaire axee selon Z (feuillure
+    fond encastre dans dessus/dessous), de profondeur 'depth',
+    couvrant (x0,x1) x (y0,y1), demarrant au plan z=z_plane et
+    creusant vers +Z (sign=+1) ou -Z (sign=-1). Coordonnees en
+    cm. Meme convention d'esquisse que add_panel_xy (plan XY
+    standard, U=X, V=Y). Si 'target_body' est fourni, la coupe
+    est restreinte a CE seul corps."""
+    sketch = comp.sketches.add(comp.xYConstructionPlane)
+    sketch.name = name
+    sketch.sketchCurves.sketchLines.addTwoPointRectangle(
+        adsk.core.Point3D.create(x0, y0, 0), adsk.core.Point3D.create(x1, y1, 0))
+    profile = _largest_profile(sketch)
+    extrudes = comp.features.extrudeFeatures
+    ext_input = extrudes.createInput(profile, adsk.fusion.FeatureOperations.CutFeatureOperation)
+    if target_body is not None:
+        ext_input.participantBodies = [target_body]
+    ext_input.startExtent = adsk.fusion.OffsetStartDefinition.create(
+        adsk.core.ValueInput.createByReal(z_plane))
+    ext_input.setDistanceExtent(False, adsk.core.ValueInput.createByReal(sign * depth))
+    extrudes.add(ext_input)
+
+
 # Prise de doigt : profil exact analyse sur le modele de reference
 # (esquisse dediee) -- 2 cercles relies par une tangente commune : le
 # petit ("boudin", R1,5, cote face avant) forme une BOUCLE (grand arc,
@@ -660,6 +683,124 @@ def ensure_meuble_parameters(design, param_prefix, values):
     return resolved
 
 
+def _calc_zone_exclusion_1(token, design, inv):
+    """Boite englobante (mm, locale) d'UN solide 'token', via
+    l'inverse 'inv' du transform monde du meuble deja calcule.
+    Renvoie None en cas d'echec (corps introuvable, etc.)."""
+    try:
+        entites = design.findEntityByToken(token)
+        if not entites:
+            return None
+        bb = entites[0].boundingBox
+        coins = []
+        for x in (bb.minPoint.x, bb.maxPoint.x):
+            for y in (bb.minPoint.y, bb.maxPoint.y):
+                for z in (bb.minPoint.z, bb.maxPoint.z):
+                    pt = adsk.core.Point3D.create(x, y, z)
+                    pt.transformBy(inv)
+                    coins.append(pt)
+        xs = [c.x for c in coins]
+        ys = [c.y for c in coins]
+        zs = [c.z for c in coins]
+        # cm (unites internes Fusion) -> mm (unites de 'values').
+        return (min(xs) * 10.0, max(xs) * 10.0,
+                min(ys) * 10.0, max(ys) * 10.0,
+                min(zs) * 10.0, max(zs) * 10.0)
+    except Exception:
+        return None
+
+
+def calc_zone_exclusion_lamello(tokens, design, meuble_transform):
+    """Calcule la boite englobante (mm, coordonnees LOCALES au
+    meuble) de CHAQUE solide de 'tokens' (liste de tokens ; un
+    token seul, str, est aussi accepte pour compatibilite
+    ascendante), en inversant 'meuble_transform' (transform monde
+    de l'occurrence du caisson). Renvoie une LISTE de tuples
+    (x0,x1,y0,y1,z0,z1) en mm, une entree par solide valide (liste
+    vide si aucun solide/aucun valide -- echec silencieux : la
+    fonction n'est qu'une optimisation, son absence ne doit
+    jamais bloquer la generation du meuble)."""
+    if not tokens:
+        return []
+    if isinstance(tokens, str):
+        tokens = [tokens]
+    try:
+        inv = meuble_transform.copy()
+        if not inv.invert():
+            return []
+    except Exception:
+        return []
+    zones = []
+    for token in tokens:
+        zone = _calc_zone_exclusion_1(token, design, inv)
+        if zone:
+            zones.append(zone)
+    return zones
+
+
+def apply_solid_subtraction(comp, tokens, design):
+    """Pour chaque token de 'tokens' (liste ; un token seul, str,
+    est aussi accepte pour compatibilite ascendante) qui resout
+    vers un corps solide existant dans le document, le soustrait
+    (coupe) de chaque corps du meuble present dans 'comp' ET dans
+    ses composants imbriques directs (portes -- voir
+    build_door_component), un par un (chaque corps outil est
+    conserve entre chaque coupe via isKeepToolBodies=True). Une
+    coupe doit etre creee dans le MEME composant que le corps
+    cible (les portes ont leur propre composant, donc leur
+    propre gestionnaire de fonctionnalites). Echoue
+    silencieusement par solide/par corps (corps supprime
+    depuis, document differe, etc.) sans interrompre la
+    reconstruction du reste du meuble ni les decoupes des
+    autres solides/corps."""
+    if not tokens:
+        return
+    if isinstance(tokens, str):
+        tokens = [tokens]
+    # Corps du caisson lui-meme, plus ceux de chaque composant
+    # imbrique direct (portes) : une porte a son propre corps,
+    # dans son propre composant.
+    cibles = [b for b in comp.bRepBodies if b.isValid]
+    for occ in comp.occurrences:
+        try:
+            cibles.extend(
+                b for b in occ.component.bRepBodies if b.isValid)
+        except Exception:
+            continue
+    # IMPORTANT : chaque solide est applique SEPAREMENT (une
+    # fonctionnalite Combiner par solide x par corps), PAS
+    # regroupes en un seul outil multiple par corps. Teste et
+    # constate : si plusieurs solides sont regroupes dans le meme
+    # Combiner et que leur EFFET CUMULE degenere la geometrie
+    # (ex. ne laisse plus rien d'un panneau fin), Fusion fait
+    # echouer la fonctionnalite ENTIERE (FEATURE_FAILED_TO_CREATE),
+    # perdant meme les decoupes individuellement valides. En
+    # gardant chaque solide dans sa propre fonctionnalite (plus
+    # de lignes dans la timeline, mais chacune independante), un
+    # echec sur un solide n'empeche pas les autres de s'appliquer.
+    for token in tokens:
+        try:
+            entites = design.findEntityByToken(token)
+            if not entites:
+                continue
+            corps_a_soustraire = entites[0]
+            for cible in cibles:
+                try:
+                    outils = adsk.core.ObjectCollection.create()
+                    outils.add(corps_a_soustraire)
+                    combine_feats = cible.parentComponent.features.combineFeatures
+                    combine_input = combine_feats.createInput(
+                        cible, outils)
+                    combine_input.operation = (
+                        adsk.fusion.FeatureOperations.CutFeatureOperation)
+                    combine_input.isKeepToolBodies = True
+                    combine_feats.add(combine_input)
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+
 def build_meuble_body(comp, values, thickness_params=None, progress=None):
     """Construit dans le composant (vide) 'comp' tous les panneaux du
     caisson/étagères/tiroirs. Renvoie la liste des spécifications de portes
@@ -685,10 +826,12 @@ def build_meuble_body(comp, values, thickness_params=None, progress=None):
     # cote vise (voir cut_groove_x) pour ne jamais grignoter le fond,
     # coincident avec le fond de la rainure.
     for g in layout.get('grooves', []):
-        axis, x_plane, sign, y0, y1, z0, z1, depth, name, target_name = g
+        axis, p0, sign, a0, a1, b0, b1, depth, name, target_name = g
+        target_body = bodies_by_name.get(target_name)
         if axis == 'x':
-            target_body = bodies_by_name.get(target_name)
-            cut_groove_x(comp, x_plane, sign, y0, y1, z0, z1, depth, name, target_body=target_body)
+            cut_groove_x(comp, p0, sign, a0, a1, b0, b1, depth, name, target_body=target_body)
+        elif axis == 'z':
+            cut_groove_z(comp, p0, sign, a0, a1, b0, b1, depth, name, target_body=target_body)
     # Prises de main (portes/facades de tiroir) : creusees APRES que
     # tous les panneaux existent, restreintes chacune a son propre
     # panneau cible.
@@ -879,6 +1022,41 @@ def build_door_component(meuble_comp, door_spec, name, thickness_param=None):
             cut_prise_doigt_porte_vertical(
                 comp, hauteur_cm, 0.0, 1, ep_avant_cm, comp.name + ' Prise de main', target_body=body)
     return occ
+
+
+def open_door_component_if_needed(door_occ, door_spec):
+    """Applique APRES COUP (une fois la porte construite ET
+    decoupee -- voir apply_solid_subtraction) la rotation
+    d'ouverture 110deg a l'occurrence 'door_occ', si 'door_spec'
+    (meme tuple que passe a build_door_component) demande une
+    porte ouverte. Ne touche a rien si la porte doit rester
+    fermee. Deplace/pivote TOUTE la geometrie deja construite
+    (portes, decoupe comprise) d'un seul bloc, via l'occurrence
+    -- pas besoin de reconstruire quoi que ce soit."""
+    (x0_local, z0_local, largeur_cm, hauteur_cm, ep_cm, sens, mode,
+     hinges_mm, ouverte, offset_ouverture_mm, prise_main_code,
+     montage_code) = door_spec
+    if not ouverte:
+        return
+    # Recalcule le transform FERME depuis door_spec (identique a
+    # celui utilise par build_door_component pour creer
+    # l'occurrence) plutot que de relire door_occ.transform : ce
+    # dernier peut ne pas etre encore stabilise juste apres une
+    # creation/decoupe, dans un flux automatise sans rafraichissement
+    # UI entre les etapes.
+    origin = adsk.core.Point3D.create(x0_local, 0, z0_local + hauteur_cm)
+    x_axis = adsk.core.Vector3D.create(1, 0, 0)
+    y_axis = adsk.core.Vector3D.create(0, 0, -1)
+    z_axis = adsk.core.Vector3D.create(0, 1, 0)
+    transform = adsk.core.Matrix3D.create()
+    transform.setWithCoordinateSystem(origin, x_axis, y_axis, z_axis)
+    transform = _transform_porte_ouverte(
+        transform, x0_local, z0_local, largeur_cm, hauteur_cm, ep_cm,
+        sens, mode, offset_ouverture_mm)
+    try:
+        door_occ.transform = transform
+    except Exception:
+        pass
 
 
 def _drill_hinges_inserta(comp, largeur_cm, hauteur_cm, ep_cm, sens, mode, hinges_mm,

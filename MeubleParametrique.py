@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.41'
+ADDIN_VERSION = '1.68'
 
 app = None
 ui = None
@@ -69,7 +69,8 @@ from meuble_geometry import (
     drill_holes_batch, clear_component_geometry,
     THICKNESS_PARAM_DEFS, sanitize_param_prefix, ensure_meuble_parameters,
     build_meuble_body, build_door_component,
-    GenerationCancelled, _tick,
+    GenerationCancelled, _tick, apply_solid_subtraction,
+    calc_zone_exclusion_lamello, open_door_component_if_needed,
 )
 from meuble_persistence import (
     DEFAULTS_FILE, ATTR_GROUP, ATTR_PARAMS, ATTR_DOORS, FIELDS_CAISSON,
@@ -246,6 +247,13 @@ def generate_meuble(root, design, values, meuble_comp, meuble_transform, progres
     param_prefix = sanitize_param_prefix(meuble_comp.name)
     thickness_params = ensure_meuble_parameters(design, param_prefix, values)
 
+    # Zone d'exclusion (mm, coordonnees LOCALES au meuble) du solide a
+    # soustraire, calculee AVANT le perÃ§age des trous Lamello afin de
+    # pouvoir decaler ceux qui tomberaient dedans plutot que de les
+    # laisser disparaitre lors de la decoupe (voir compute_layout).
+    values['zone_exclusion_lamello'] = calc_zone_exclusion_lamello(
+        values.get('solides_soustraits_tokens'), design, meuble_transform)
+
     doors_local = build_meuble_body(meuble_comp, values, thickness_params, progress)
 
     # Portes creees IMBRIQUEES dans meuble_comp (voir build_door_component) :
@@ -264,6 +272,17 @@ def generate_meuble(root, design, values, meuble_comp, meuble_transform, progres
         actual_name = door_occ.component.name
         door_names.append(actual_name)
         _tick(progress, base_step + i + 1, actual_name)
+
+    # Solide a soustraire (mur/tuyau/etc. selectionne) : reapplique
+    # a chaque reconstruction, APRES la creation des portes (elles
+    # aussi doivent etre decoupees, pas seulement le caisson).
+    # NOTE : la porte est deja dans sa position finale (ouverte ou
+    # fermee) a ce stade -- l'ouverture est appliquee A LA
+    # CONSTRUCTION (voir build_door_component), pas apres coup, un
+    # essai de rotation post-hoc via occ.transform ayant cause un
+    # deplacement incorrect de la porte (constate).
+    apply_solid_subtraction(
+        meuble_comp, values.get('solides_soustraits_tokens'), design)
 
     try:
         meuble_comp.attributes.add(ATTR_GROUP, ATTR_PARAMS, json.dumps(values))
@@ -325,6 +344,7 @@ def apply_meuble_selection(inputs, override_values=None):
             ci.value = mm_to_cm(values[key])
     for field_id, key in (
             ('champSocle', 'socle'),
+            ('champRetraitFond', 'retrait_fond'),
             ('champRetraitEtagere', 'retrait_etagere'),
             ('champRetraitMontant', 'retrait_montant'),
             ('champEpMontant', 'ep_montant'),
@@ -355,6 +375,34 @@ def apply_meuble_selection(inputs, override_values=None):
                        else 'Encastré')
         for _li in dd_pose_socle.listItems:
             _li.isSelected = (_li.name == _pose_label)
+    dd_pose_fond_a = inputs.itemById('dropdownPoseFond')
+    if dd_pose_fond_a:
+        _pose_fond_label = ('Encastré' if values.get('pose_fond') == 'encastre'
+                            else 'En applique')
+        for _li in dd_pose_fond_a.listItems:
+            _li.isSelected = (_li.name == _pose_fond_label)
+    dd_rainure_feuillure_a = inputs.itemById('dropdownRainureFeuillureFond')
+    if dd_rainure_feuillure_a:
+        _rf_label = ('Feuillure' if values.get('rainure_feuillure_fond') == 'feuillure'
+                     else 'Rainure')
+        for _li in dd_rainure_feuillure_a.listItems:
+            _li.isSelected = (_li.name == _rf_label)
+    sel_solide_a = inputs.itemById('selectSolideSoustraire')
+    if sel_solide_a:
+        sel_solide_a.clearSelection()
+        _tokens_a = values.get('solides_soustraits_tokens')
+        if not _tokens_a:
+            _ancien_a = values.get('solide_soustrait_token')
+            _tokens_a = [_ancien_a] if _ancien_a else []
+        if _tokens_a:
+            _design_a = adsk.core.Application.get().activeProduct
+            for _tok_a in _tokens_a:
+                try:
+                    _ent_a = _design_a.findEntityByToken(_tok_a)
+                    if _ent_a:
+                        sel_solide_a.addSelection(_ent_a[0])
+                except Exception:
+                    pass
     chk_onglet = inputs.itemById('checkCoupeOnglet')
     if chk_onglet and 'coupe_onglet' in values:
         chk_onglet.value = bool(values['coupe_onglet'])
@@ -1961,8 +2009,39 @@ def add_meuble_fields(inputs, cur_mm_func):
     gd.addBoolValueInput(
         'checkCoupeOnglet', "Coupe d'onglet", True, '',
         bool(cur_mm_func('coupe_onglet', False)))
-    for field_id, key, default_mm, min_mm, max_mm, label in FIELDS_CAISSON[3:]:
+    for field_id, key, default_mm, min_mm, max_mm, label in FIELDS_CAISSON[3:4]:
         add_value_field(gd, field_id, label, mm_to_cm(cur_mm_func(key, default_mm)), min_mm, max_mm)
+
+    group_fond = tc.addGroupCommandInput('groupFond', 'Fond')
+    group_fond.isExpanded = True
+    gf = group_fond.children
+    for field_id, key, default_mm, min_mm, max_mm, label in FIELDS_CAISSON[4:5]:
+        add_value_field(gf, field_id, label, mm_to_cm(cur_mm_func(key, default_mm)), min_mm, max_mm)
+    _pose_fond_actuel = cur_mm_func('pose_fond', 'applique')
+    dd_pose_fond = gf.addDropDownCommandInput(
+        'dropdownPoseFond', 'Type de pose',
+        adsk.core.DropDownStyles.TextListDropDownStyle)
+    dd_pose_fond.listItems.add(
+        'En applique', _pose_fond_actuel != 'encastre')
+    dd_pose_fond.listItems.add(
+        'Encastré', _pose_fond_actuel == 'encastre')
+    _champ_retrait_fond = add_value_field(
+        gf, 'champRetraitFond', 'Retrait',
+        mm_to_cm(cur_mm_func('retrait_fond', 0)), 0, 100)
+    _rainure_feuillure_actuel = cur_mm_func('rainure_feuillure_fond', 'rainure')
+    dd_rainure_feuillure = gf.addDropDownCommandInput(
+        'dropdownRainureFeuillureFond', 'Rainure/Feuillure',
+        adsk.core.DropDownStyles.TextListDropDownStyle)
+    dd_rainure_feuillure.listItems.add(
+        'Rainure', _rainure_feuillure_actuel != 'feuillure')
+    dd_rainure_feuillure.listItems.add(
+        'Feuillure', _rainure_feuillure_actuel == 'feuillure')
+    # Retrait et Rainure/Feuillure n'ont de sens qu'en mode
+    # Encastre : desactives (grises) en 'En applique'.
+    if _pose_fond_actuel != 'encastre':
+        if _champ_retrait_fond:
+            _champ_retrait_fond.isEnabled = False
+        dd_rainure_feuillure.isEnabled = False
 
     group_socle = tc.addGroupCommandInput('groupSocle', 'Socle')
     group_socle.isExpanded = True
@@ -1981,6 +2060,30 @@ def add_meuble_fields(inputs, cur_mm_func):
         'Encastré', _pose_socle_actuel != 'applique')
     dd_pose_socle.listItems.add(
         'En applique', _pose_socle_actuel == 'applique')
+
+    group_decoupe = tc.addGroupCommandInput('groupDecoupeSolide', 'Découpe')
+    group_decoupe.isExpanded = True
+    sel_solide = group_decoupe.children.addSelectionInput(
+        'selectSolideSoustraire', 'Solides à soustraire',
+        'Sélectionner un ou plusieurs corps solides existants (murs, tuyaux, etc.) à évider du meuble.\n'
+        'La découpe est reappliquee automatiquement a chaque reconstruction.')
+    sel_solide.addSelectionFilter('SolidBodies')
+    sel_solide.setSelectionLimits(0, 0)
+    _tokens_solides_actuels = cur_mm_func('solides_soustraits_tokens', None)
+    if not _tokens_solides_actuels:
+        # Compatibilite ascendante avec l'ancien champ (1 seul
+        # solide, avant le passage a une liste).
+        _ancien_token = cur_mm_func('solide_soustrait_token', None)
+        _tokens_solides_actuels = [_ancien_token] if _ancien_token else []
+    if _tokens_solides_actuels:
+        _design_ici = adsk.core.Application.get().activeProduct
+        for _tok in _tokens_solides_actuels:
+            try:
+                _ent_solide = _design_ici.findEntityByToken(_tok)
+                if _ent_solide:
+                    sel_solide.addSelection(_ent_solide[0])
+            except Exception:
+                pass
 
     # --- Volet Montant intermédiaire (deplace hors de Caisson) ----------
     tab_montants = inputs.addTabCommandInput('tabMontants', 'Montant intermédiaire')
@@ -2524,6 +2627,19 @@ def collect_values_mm(inputs):
     values['profondeur'] = val_mm('champProfondeur', 500)
     values['ep_panneau'] = val_mm('champEpPanneau', 19)
     values['ep_fond'] = val_mm('champEpFond', 8)
+    dd_pose_fond = inputs.itemById('dropdownPoseFond')
+    values['pose_fond'] = (
+        'encastre'
+        if dd_pose_fond and dd_pose_fond.selectedItem
+        and dd_pose_fond.selectedItem.name == 'Encastré'
+        else 'applique')
+    values['retrait_fond'] = val_mm('champRetraitFond', 0)
+    dd_rainure_feuillure_c = inputs.itemById('dropdownRainureFeuillureFond')
+    values['rainure_feuillure_fond'] = (
+        'feuillure'
+        if dd_rainure_feuillure_c and dd_rainure_feuillure_c.selectedItem
+        and dd_rainure_feuillure_c.selectedItem.name == 'Feuillure'
+        else 'rainure')
     chk_socle = inputs.itemById('checkSocleActif')
     values['socle_actif'] = chk_socle.value if chk_socle else True
     values['socle'] = val_mm('champSocle', 20)
@@ -2534,6 +2650,18 @@ def collect_values_mm(inputs):
         if dd_pose_socle and dd_pose_socle.selectedItem
         and dd_pose_socle.selectedItem.name == 'En applique'
         else 'encastre')
+    sel_solide_c = inputs.itemById('selectSolideSoustraire')
+    _tokens_c = []
+    if sel_solide_c:
+        for _i in range(sel_solide_c.selectionCount):
+            try:
+                _tokens_c.append(sel_solide_c.selection(_i).entity.entityToken)
+            except Exception:
+                continue
+    values['solides_soustraits_tokens'] = _tokens_c
+    # Compatibilite ascendante : garde aussi l'ancien champ singulier
+    # (1er solide), au cas ou du code externe/ancien s'y referait.
+    values['solide_soustrait_token'] = _tokens_c[0] if _tokens_c else None
     chk_onglet = inputs.itemById('checkCoupeOnglet')
     values['coupe_onglet'] = chk_onglet.value if chk_onglet else False
 
@@ -2704,6 +2832,20 @@ def update_field_visibility(inputs):
             champ_socle.isVisible = chk_socle.value
         if champ_retrait_plinthe:
             champ_retrait_plinthe.isVisible = chk_socle.value
+
+    # Retrait et Rainure/Feuillure du Fond n'ont de sens qu'en
+    # mode Encastre : desactives (grises) en 'En applique'.
+    dd_pose_fond = inputs.itemById('dropdownPoseFond')
+    champ_retrait_fond = inputs.itemById('champRetraitFond')
+    dd_rainure_feuillure = inputs.itemById('dropdownRainureFeuillureFond')
+    if dd_pose_fond:
+        _fond_encastre = (
+            dd_pose_fond.selectedItem
+            and dd_pose_fond.selectedItem.name == 'Encastré')
+        if champ_retrait_fond:
+            champ_retrait_fond.isEnabled = bool(_fond_encastre)
+        if dd_rainure_feuillure:
+            dd_rainure_feuillure.isEnabled = bool(_fond_encastre)
 
     # Retrait façade / Référence perçage restent communs et toujours visibles
     # (l'activation/désactivation est désormais un réglage par colonne). Dans
@@ -3081,7 +3223,9 @@ class CreateInputChangedHandler(adsk.core.InputChangedEventHandler):
                 delete_current_preset(full_inputs)
             elif args.input.id == 'buttonAppliquer':
                 apply_button_clicked(args)
-            elif args.input.id in ('checkSocleActif', 'checkCharniereAuto', 'checkCoupeOnglet'):
+            elif args.input.id in (
+                    'checkSocleActif', 'checkCharniereAuto', 'checkCoupeOnglet',
+                    'dropdownPoseFond'):
                 update_field_visibility(full_inputs)
             elif (args.input.id.startswith('dropdownPercage32Colonne')
                   and args.input.id.endswith('Systeme')):

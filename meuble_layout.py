@@ -741,6 +741,144 @@ def compute_etagere_z_starts(nb_etageres, mode, interior_z0, interior_h, Ep, col
     return z_starts
 
 
+def _decaler_y_si_une_zone(x, y, z, zone_mm, y_min=None, y_max=None, marge_cm=1.0):
+    """Si le point (x,y,z) (cm) tombe dans UNE 'zone_mm' (mm,
+    boite englobante d'UN solide soustrait), decale y pour sortir
+    de la zone (vers le bord le plus proche, avant ou arriere),
+    avec une marge de securite. Renvoie y inchange si zone_mm est
+    None ou si le point n'est pas dans la zone. 'y_min'/'y_max'
+    (cm), quand fournis, bornent le decalage a la plage
+    REELLEMENT valide du montant (interior_depth) : un decalage
+    hors de cette plage produirait un trou hors matiere, ce qui
+    peut faire echouer TOUT le lot de percages groupes
+    (drill_holes_batch) -- dans ce cas on renvoie y inchange
+    (mieux vaut garder le trou dans la zone, perce normalement
+    par le reste du code, que de faire disparaitre tous les
+    autres percages du lot)."""
+    if not zone_mm:
+        return y
+    zx0, zx1, zy0, zy1, zz0, zz1 = (v / 10.0 for v in zone_mm)
+    if not (zx0 <= x <= zx1 and zy0 <= y <= zy1 and zz0 <= z <= zz1):
+        return y
+    dist_avant = y - zy0
+    dist_arriere = zy1 - y
+    candidat_avant = zy0 - marge_cm
+    candidat_arriere = zy1 + marge_cm
+    valide_avant = y_min is None or candidat_avant >= y_min
+    valide_arriere = y_max is None or candidat_arriere <= y_max
+    ordre = ([candidat_avant, candidat_arriere]
+             if dist_avant <= dist_arriere else
+             [candidat_arriere, candidat_avant])
+    validites = ([valide_avant, valide_arriere]
+                 if dist_avant <= dist_arriere else
+                 [valide_arriere, valide_avant])
+    for _cand, _ok in zip(ordre, validites):
+        if _ok:
+            return _cand
+    return y
+
+
+def _decaler_y_si_zone_exclusion(x, y, z, zones_mm, y_min=None, y_max=None, marge_cm=1.0):
+    """Comme _decaler_y_si_une_zone, mais 'zones_mm' est une
+    LISTE de boites (une par solide soustrait -- plusieurs
+    solides selectionnables depuis la version multi-solides). Le
+    decalage est applique ITERATIVEMENT : si y tombe dans
+    plusieurs zones, chaque zone est evitee l'une apres l'autre
+    (a partir de la position DEJA decalee par la zone
+    precedente). Un seul tuple (compatibilite ascendante) est
+    aussi accepte directement."""
+    if not zones_mm:
+        return y
+    if isinstance(zones_mm, tuple):
+        zones_mm = [zones_mm]
+    for zone_mm in zones_mm:
+        y = _decaler_y_si_une_zone(x, y, z, zone_mm, y_min, y_max, marge_cm)
+    return y
+
+
+def _decaler_groupe_si_une_zone(positions_y, x, z, zone_mm,
+                                       y_min=None, y_max=None, marge_cm=None):
+    """Decale RIGIDEMENT tout un sous-groupe de positions Y (liste
+    de floats, cm) qui doit garder son ecart interne D'ORIGINE
+    (ex. la paire avant/avant-decale d'un assemblage Lamello, dont
+    l'ecart de 101mm est une cote fixe de la geometrie, PAS une
+    simple contrainte anti-chevauchement) : le MEME delta est
+    applique a TOUTES les positions du sous-groupe si AU MOINS UNE
+    d'entre elles tombe dans 'zone_mm'. Appeler cette fonction sur
+    un sous-groupe restreint (une paire, pas les 4 positions a la
+    fois) : plus le sous-groupe est etroit, plus il est facile de
+    trouver une position de repli valide. Renvoie la liste
+    inchangee si aucune position de repli ne tient des 2 cotes
+    (plutot que de produire une position hors matiere)."""
+    if not zone_mm or not positions_y:
+        return list(positions_y)
+    if marge_cm is None:
+        # 9.5mm par defaut : meme marge de securite que
+        # LAMELLO_MARGE_DESSUS_DESSOUS_MM, pour rester coherent
+        # avec la reference de decalage du bord utilisee ailleurs.
+        marge_cm = mm_to_cm(LAMELLO_MARGE_DESSUS_DESSOUS_MM)
+    zx0, zx1, zy0, zy1, zz0, zz1 = (v / 10.0 for v in zone_mm)
+    if not (zx0 <= x <= zx1 and zz0 <= z <= zz1):
+        return list(positions_y)
+    if not any(zy0 <= y <= zy1 for y in positions_y):
+        return list(positions_y)
+    grp_min, grp_max = min(positions_y), max(positions_y)
+    delta_avant = (zy0 - marge_cm) - grp_max
+    delta_arriere = (zy1 + marge_cm) - grp_min
+    valide_avant = y_min is None or (grp_min + delta_avant) >= y_min
+    valide_arriere = y_max is None or (grp_max + delta_arriere) <= y_max
+    if abs(delta_avant) <= abs(delta_arriere):
+        ordre = [(delta_avant, valide_avant), (delta_arriere, valide_arriere)]
+    else:
+        ordre = [(delta_arriere, valide_arriere), (delta_avant, valide_avant)]
+    for _delta, _ok in ordre:
+        if _ok:
+            return [y + _delta for y in positions_y]
+    return list(positions_y)
+
+
+def _decaler_groupe_si_zone_exclusion(positions_y, x, z, zones_mm,
+                                       y_min=None, y_max=None, marge_cm=None):
+    """Comme _decaler_groupe_si_une_zone, mais 'zones_mm' est une
+    LISTE de boites (une par solide soustrait). Applique le
+    decalage rigide ITERATIVEMENT, zone par zone (a partir des
+    positions DEJA decalees par la zone precedente). Un seul
+    tuple (compatibilite ascendante) est aussi accepte."""
+    if not zones_mm:
+        return list(positions_y)
+    if isinstance(zones_mm, tuple):
+        zones_mm = [zones_mm]
+    resultat = list(positions_y)
+    for zone_mm in zones_mm:
+        resultat = _decaler_groupe_si_une_zone(
+            resultat, x, z, zone_mm, y_min, y_max, marge_cm)
+    return resultat
+
+
+def _decaler_par_paires_generique(ys_bruts, tags, x, z, values, y_max):
+    """Version reutilisable (hors fermeture) du decalage par
+    paires avant/avant-decale et arriere-decale/arriere : lit la
+    zone d'exclusion dans 'values', et decale RIGIDEMENT (ecart de
+    101mm preserve) chaque paire qui tombe dedans, separement de
+    l'autre paire. 'tags' commencent par 'avant' ou 'arrière'.
+    Renvoie une liste de meme longueur que 'ys_bruts'."""
+    zone_excl = values.get('zone_exclusion_lamello')
+    if not zone_excl:
+        return list(ys_bruts)
+    idx_avant = [i for i, t in enumerate(tags) if t.startswith('avant')]
+    idx_arriere = [i for i, t in enumerate(tags) if t.startswith('arrière')]
+    resultat = list(ys_bruts)
+    for idx_paire in (idx_avant, idx_arriere):
+        if not idx_paire:
+            continue
+        ys_paire = [ys_bruts[i] for i in idx_paire]
+        ys_decale = _decaler_groupe_si_zone_exclusion(
+            ys_paire, x, z, zone_excl, 0, y_max)
+        for i, y in zip(idx_paire, ys_decale):
+            resultat[i] = y
+    return resultat
+
+
 def compute_layout(values):
     """values : dict en mm/entiers. Renvoie un dict de listes de panneaux
     (en cm) prêts à être construits, plus la liste des portes à créer."""
@@ -781,6 +919,26 @@ def compute_layout(values):
         raise MeubleLayoutError(
             'Profondeur utile insuffisante : reduire l\'epaisseur du fond, ou '
             'augmenter la Profondeur.')
+    # Fond 'encastre' (loge dans une feuillure, son AVANT recule
+    # d'Ef par rapport a l'arriere des montants, plus un
+    # 'retrait_fond' optionnel pour le reculer davantage) : les
+    # elements interieurs (montants intermediaires, etageres
+    # fixe/mobile) doivent s'arreter avant lui, pas s'enfoncer
+    # dans son espace.
+    # interior_depth_int represente directement la FACE AVANT
+    # (interieure) du fond -- la reference sur laquelle les
+    # elements interieurs (montants intermediaires, etageres,
+    # Dessus/Dessous en mode standard) doivent s'arreter pour
+    # rester alignes avec le fond, quel que soit son mode de
+    # pose. En 'applique', c'est la meme valeur qu'interior_depth
+    # (comportement inchange). En 'encastre', le fond recule
+    # d'une epaisseur de fond (Ef) supplementaire en plus du
+    # 'retrait_fond' optionnel, car il est logee plus avant dans
+    # sa feuillure.
+    retrait_fond = mm_to_cm(values.get('retrait_fond', 0))
+    interior_depth_int = (
+        interior_depth - 2 * Ef - retrait_fond
+        if values.get('pose_fond') == 'encastre' else interior_depth)
     interior_z0 = Ep              # dessus du panneau du bas
     interior_z1 = H - Ep          # dessous du panneau du haut
     interior_h = interior_z1 - interior_z0
@@ -802,8 +960,18 @@ def compute_layout(values):
     panels.append((L - Ep, L, 0, interior_depth, -Soc, H + Soc, 'Côté droit', None))
     _dessous_x0, _dessous_x1 = (0, L) if coupe_onglet else (Ep, L - Ep)
     _dessus_x0, _dessus_x1 = (0, L) if coupe_onglet else (Ep, L - Ep)
-    panels.append((_dessous_x0, _dessous_x1, 0, interior_depth, 0, Ep, 'Dessous', 'EpPanneau'))
-    panels.append((_dessus_x0, _dessus_x1, 0, interior_depth, H - Ep, Ep, 'Dessus', 'EpPanneau'))
+    # Fond encastre : en mode Standard (pas coupe d'onglet),
+    # Dessus/Dessous s'arretent TOUJOURS sur la face interieure
+    # du fond (interior_depth_int), que le fond soit en rainure
+    # ou en feuillure -- seuls les cotes recoivent le traitement
+    # 'feuillure' complet (ils ont de la matiere derriere le
+    # fond pour s'ouvrir dedans, pas Dessus/Dessous qui s'y
+    # arretent net). En coupe d'onglet, ce recul n'est PAS
+    # applique (fonctionne deja tel quel, ne pas y toucher).
+    _feuillure_fond = values.get('rainure_feuillure_fond') == 'feuillure'
+    _y1_dessus_dessous = interior_depth if coupe_onglet else interior_depth_int
+    panels.append((_dessous_x0, _dessous_x1, 0, _y1_dessus_dessous, 0, Ep, 'Dessous', 'EpPanneau'))
+    panels.append((_dessus_x0, _dessus_x1, 0, _y1_dessus_dessous, H - Ep, Ep, 'Dessus', 'EpPanneau'))
     if coupe_onglet:
         # Coupe d'onglet 45 degres aux 4 coins du caisson principal
         # (cotes exterieurs + Dessus/Dessous uniquement, pas les
@@ -847,7 +1015,85 @@ def compute_layout(values):
                 [(L, 0), (L, Ep), (L - Ep, Ep)], 0, interior_depth,
                 'Dessous Onglet Droit', 'Dessous'))
     if Ef > 0:
-        panels.append((0, L, interior_depth, P, 0, H, 'Fond', None))
+        if values.get('pose_fond') == 'encastre':
+            # 'Encastre' : le fond est reduit d'une demi-epaisseur
+            # de panneau meuble sur les 4 cotes (x0/x1/z0/z1), et
+            # son ARRIERE affleure le bord arriere des
+            # montants/dessus/dessous (Y=interior_depth, pas P) :
+            # loge dans une feuillure plutot que d'etre plaque a
+            # l'arriere du caisson.
+            _demi_ep = Ep / 2.0
+            # Hauteur du fond : en mode Standard (pas coupe
+            # d'onglet), le fond s'etend sur TOUTE la hauteur
+            # (0..H), couvrant/recouvrant Dessus et Dessous par
+            # l'arriere (qui ont eux-memes recule en profondeur --
+            # voir interior_depth_int). En coupe d'onglet, le fond
+            # reste reduit entre Dessus/Dessous (comportement
+            # actuel, inchange).
+            _fond_z0, _fond_z1 = (
+                (_demi_ep, H - _demi_ep) if coupe_onglet else (0, H))
+            panels.append((
+                _demi_ep, L - _demi_ep,
+                interior_depth_int, interior_depth_int + Ef,
+                _fond_z0, _fond_z1 - _fond_z0,
+                'Fond', None))
+            # Feuillure (rainure) creusee dans les cotes/dessus/
+            # dessous pour loger le fond encastre, sur toute sa
+            # hauteur/largeur, profondeur = demi-epaisseur
+            # panneau meuble, sur la plage Y du fond (qui inclut
+            # le retrait_fond eventuel).
+            # Rainures DEBOUCHANTES (pas borgnes) : chacune va
+            # jusqu'aux 2 bords du panneau qui la porte (pleine
+            # hauteur pour les cotes, pleine largeur pour
+            # dessus/dessous), rejoignant les rainures voisines
+            # aux 4 coins pour former un canal continu ou le
+            # fond peut coulisser, comme en usinage reel (sur
+            # scie a table, pas d'arret borgne).
+            # Les cotes s'etendent jusqu'a -Soc quand il y a un
+            # socle (voir leur propre panneau) : la rainure doit
+            # descendre jusque-la pour rester debouchante en bas,
+            # pas s'arreter a Z=0.
+            # 'Rainure' (par defaut) : canal ferme (borgne cote
+            # arriere), profondeur Ef uniquement. 'Feuillure' :
+            # ouverte vers l'arriere du meuble -- s'etend jusqu'au
+            # bord arriere REEL du panneau qui la porte (cote :
+            # interior_depth : dessus/dessous : leur propre Y1,
+            # deja calcule plus haut), quel que soit le mode
+            # standard/onglet.
+            _y1_rainure_cote = interior_depth if _feuillure_fond else interior_depth_int + Ef
+            # Borne a la profondeur REELLE de Dessus/Dessous
+            # (_y1_dessus_dessous) : en mode Standard, ils
+            # s'arretent net a la face interieure du fond (voir
+            # plus haut), donc pas de matiere au-dela pour y
+            # ouvrir une feuillure -- seul le mode Coupe d'onglet
+            # leur laisse de la matiere jusqu'a interior_depth.
+            grooves.append((
+                'x', Ep, -1, interior_depth_int, _y1_rainure_cote,
+                -Soc, H, _demi_ep,
+                'Côté gauche Feuillure Fond', 'Côté gauche'))
+            grooves.append((
+                'x', L - Ep, 1, interior_depth_int, _y1_rainure_cote,
+                -Soc, H, _demi_ep,
+                'Côté droit Feuillure Fond', 'Côté droit'))
+            # Dessus/Dessous n'ont une rainure a creuser que
+            # s'ils s'etendent REELLEMENT au-dela de la face
+            # interieure du fond (uniquement en coupe d'onglet) :
+            # en mode Standard ils s'arretent net dessus, pas de
+            # matiere a evider.
+            if _y1_dessus_dessous > interior_depth_int + 1e-6:
+                _y1_rainure_ds = min(
+                    interior_depth if _feuillure_fond else interior_depth_int + Ef,
+                    _y1_dessus_dessous)
+                grooves.append((
+                    'z', H - Ep, 1, 0, L,
+                    interior_depth_int, _y1_rainure_ds, _demi_ep,
+                    'Dessus Feuillure Fond', 'Dessus'))
+                grooves.append((
+                    'z', Ep, -1, 0, L,
+                    interior_depth_int, _y1_rainure_ds, _demi_ep,
+                    'Dessous Feuillure Fond', 'Dessous'))
+        else:
+            panels.append((0, L, interior_depth, P, 0, H, 'Fond', None))
 
     # --- Plinthe : panneau vertical qui passe sous le Dessous, entre les
     # montants droite/gauche, en épaisseur panneaux, reculé de la face avant
@@ -922,7 +1168,7 @@ def compute_layout(values):
             centre = axe_cm if ref != 'droite' else (L - axe_cm)
             montant_centres.append(centre)
             panels.append((centre - Ep_montant / 2.0, centre + Ep_montant / 2.0, retrait_montant,
-                            interior_depth, interior_z0, interior_h,
+                            interior_depth_int, interior_z0, interior_h,
                             'Montant intermédiaire {}'.format(i), None))
     montant_centres.sort()
 
@@ -957,7 +1203,7 @@ def compute_layout(values):
             j = bay_i + 1
             name_ef = ('Étagère fixe {}'.format(k) if len(segments) == 1
                        else 'Étagère fixe {} section {}'.format(k, j))
-            panels.append((seg_x0, seg_x1, retrait_etagere_fixe, interior_depth,
+            panels.append((seg_x0, seg_x1, retrait_etagere_fixe, interior_depth_int,
                            z_centre_ef - Ep_etagere_fixe / 2.0, Ep_etagere_fixe,
                            name_ef, None))
 
@@ -1229,7 +1475,7 @@ def compute_layout(values):
                 suffixe = (' ' + ' '.join(parts)) if parts else ''
                 name = 'Étagère {}{}'.format(i, suffixe)
                 panels.append(
-                    (seg_x0, seg_x1, retrait_niche, interior_depth,
+                    (seg_x0, seg_x1, retrait_niche, interior_depth_int,
                      z_start, Ep_etagere_mobile, name, None))
 
     # --- Option '3 Trous' (Percage 32, par niche) : masque tous les
@@ -1994,7 +2240,11 @@ def compute_layout(values):
         # dédoublonnage) si le meuble est trop peu profond pour les caser tous
         # sans se chevaucher ou se croiser.
         front_margin = Ep / 2.0
-        back_margin = interior_depth - Ep / 2.0
+        # interior_depth_int (pas interior_depth) : en Fond
+        # encastre, le percçage Lamello arriere doit lui aussi
+        # reculer de la profondeur de la feuillure, comme les
+        # montants intermediaires/etageres.
+        back_margin = interior_depth_int - Ep / 2.0
         decale = mm_to_cm(LAMELLO_DECALE_MM)
         front_decale = min(front_margin + decale, back_margin)
         back_decale = max(back_margin - decale, front_margin)
@@ -2007,15 +2257,26 @@ def compute_layout(values):
                 seen.add(key)
                 positions.append((y_center, tag))
         marge_dd = mm_to_cm(LAMELLO_MARGE_DESSUS_DESSOUS_MM)
-        for y_center, tag in positions:
-            holes.append(('X', Ep, -1, y_center, marge_dd, diam_lamello, depth_lamello,
-                           'Lamello Montant G-Dessous {}'.format(tag)))
-            holes.append(('X', Ep, -1, y_center, H - marge_dd, diam_lamello, depth_lamello,
-                           'Lamello Montant G-Dessus {}'.format(tag)))
-            holes.append(('X', L - Ep, 1, y_center, marge_dd, diam_lamello, depth_lamello,
-                           'Lamello Montant D-Dessous {}'.format(tag)))
-            holes.append(('X', L - Ep, 1, y_center, H - marge_dd, diam_lamello, depth_lamello,
-                           'Lamello Montant D-Dessus {}'.format(tag)))
+        _ys_bruts = [p[0] for p in positions]
+        _tags = [p[1] for p in positions]
+        _ys_gb = _decaler_par_paires_generique(
+            _ys_bruts, _tags, Ep, marge_dd, values, interior_depth)
+        _ys_gh = _decaler_par_paires_generique(
+            _ys_bruts, _tags, Ep, H - marge_dd, values, interior_depth)
+        _ys_db = _decaler_par_paires_generique(
+            _ys_bruts, _tags, L - Ep, marge_dd, values, interior_depth)
+        _ys_dh = _decaler_par_paires_generique(
+            _ys_bruts, _tags, L - Ep, H - marge_dd, values, interior_depth)
+        for _tag, _y_gb, _y_gh, _y_db, _y_dh in zip(
+                _tags, _ys_gb, _ys_gh, _ys_db, _ys_dh):
+            holes.append(('X', Ep, -1, _y_gb, marge_dd, diam_lamello, depth_lamello,
+                           'Lamello Montant G-Dessous {}'.format(_tag)))
+            holes.append(('X', Ep, -1, _y_gh, H - marge_dd, diam_lamello, depth_lamello,
+                           'Lamello Montant G-Dessus {}'.format(_tag)))
+            holes.append(('X', L - Ep, 1, _y_db, marge_dd, diam_lamello, depth_lamello,
+                           'Lamello Montant D-Dessous {}'.format(_tag)))
+            holes.append(('X', L - Ep, 1, _y_dh, H - marge_dd, diam_lamello, depth_lamello,
+                           'Lamello Montant D-Dessus {}'.format(_tag)))
         # Montants intermediaires : memes positions AVANT/arriere,
         # mais decalees du retrait_montant (ces montants ne
         # commencent pas forcement a Y=0 comme les cotes exterieurs).
@@ -2030,15 +2291,21 @@ def compute_layout(values):
             if key not in seen_mi:
                 seen_mi.add(key)
                 positions_mi.append((y_center, tag))
-        for y_center, tag in positions_mi:
-            for mi, centre in enumerate(montant_centres, start=1):
-                # Reference sur la GAUCHE du montant (pas l'axe) :
-                # marge fixe depuis le bord gauche, pour que le trou
-                # ne bouge pas si l'epaisseur montant change.
-                x_gauche_mi = centre - Ep_montant / 2.0 + marge_dd
-                holes.append(('Z', Ep, -1, x_gauche_mi, y_center, diam_lamello, depth_lamello,
+        _ys_mi_bruts = [p[0] for p in positions_mi]
+        _tags_mi = [p[1] for p in positions_mi]
+        for mi, centre in enumerate(montant_centres, start=1):
+            # Reference sur la GAUCHE du montant (pas l'axe) :
+            # marge fixe depuis le bord gauche, pour que le trou
+            # ne bouge pas si l'epaisseur montant change.
+            x_gauche_mi = centre - Ep_montant / 2.0 + marge_dd
+            _ys_mi_bas = _decaler_par_paires_generique(
+                _ys_mi_bruts, _tags_mi, x_gauche_mi, Ep, values, interior_depth)
+            _ys_mi_haut = _decaler_par_paires_generique(
+                _ys_mi_bruts, _tags_mi, x_gauche_mi, H - Ep, values, interior_depth)
+            for tag, y_bas, y_haut in zip(_tags_mi, _ys_mi_bas, _ys_mi_haut):
+                holes.append(('Z', Ep, -1, x_gauche_mi, y_bas, diam_lamello, depth_lamello,
                                'Lamello Montant Inter {} Dessous {}'.format(mi, tag)))
-                holes.append(('Z', H - Ep, 1, x_gauche_mi, y_center, diam_lamello, depth_lamello,
+                holes.append(('Z', H - Ep, 1, x_gauche_mi, y_haut, diam_lamello, depth_lamello,
                                'Lamello Montant Inter {} Dessus {}'.format(mi, tag)))
 
         # --- Étagères fixe : mêmes perçages d'assemblage Lamello (avant /
@@ -2076,13 +2343,19 @@ def compute_layout(values):
                 # marge fixe depuis le dessus du panneau, pour que le
                 # trou ne bouge pas si l'epaisseur etagere fixe change.
                 z_haut_ef = z_centre_ef + Ep_etagere_fixe / 2.0 - marge_dd
-                for y_center, tag in positions_ef:
+                _ys_ef_bruts = [p[0] for p in positions_ef]
+                _tags_ef = [p[1] for p in positions_ef]
+                _ys_ef_g = _decaler_par_paires_generique(
+                    _ys_ef_bruts, _tags_ef, seg_x0, z_haut_ef, values, interior_depth)
+                _ys_ef_d = _decaler_par_paires_generique(
+                    _ys_ef_bruts, _tags_ef, seg_x1, z_haut_ef, values, interior_depth)
+                for tag, y_g, y_d in zip(_tags_ef, _ys_ef_g, _ys_ef_d):
                     if depth_gauche_ef > 0:
-                        holes.append(('X', seg_x0, -1, y_center, z_haut_ef, diam_lamello, depth_gauche_ef,
+                        holes.append(('X', seg_x0, -1, y_g, z_haut_ef, diam_lamello, depth_gauche_ef,
                                        'Lamello Étagère fixe {} Compart {} Gauche {}'.format(
                                            k, bay_i + 1, tag)))
                     if depth_droite_ef > 0:
-                        holes.append(('X', seg_x1, 1, y_center, z_haut_ef, diam_lamello, depth_droite_ef,
+                        holes.append(('X', seg_x1, 1, y_d, z_haut_ef, diam_lamello, depth_droite_ef,
                                        'Lamello Étagère fixe {} Compart {} Droite {}'.format(
                                            k, bay_i + 1, tag)))
 
@@ -2115,7 +2388,10 @@ def compute_layout(values):
     # est trop peu profond pour les distinguer.
     positions_p32 = []
     seen_p32 = set()
-    for y_center, tag in ((retrait_p32, 'avant'), (interior_depth - retrait_p32, 'arrière')):
+    # interior_depth_int (pas interior_depth) : en Fond encastre,
+    # la position arriere doit elle aussi reculer de la
+    # profondeur de la feuillure.
+    for y_center, tag in ((retrait_p32, 'avant'), (interior_depth_int - retrait_p32, 'arrière')):
         key = round(y_center, 4)
         if key not in seen_p32:
             seen_p32.add(key)
@@ -2129,11 +2405,27 @@ def compute_layout(values):
             if col_candidates:
                 for y_center, tag in positions_p32:
                     for k, z_k in enumerate(col_candidates):
+                        # Contrairement au Lamello (paires a ecart
+                        # fixe 101mm a preserver), la grille
+                        # systeme 32/64 est reguliere et chaque trou
+                        # est independant : seuls ceux QUI
+                        # TOMBENT REELLEMENT dans la zone coupee
+                        # sont decales, chacun individuellement
+                        # (pas de groupe rigide).
+                        _marge_p32 = mm_to_cm(values.get('percage32_retrait', 37))
                         if depth_gauche > 0:
-                            holes.append(('X', seg_x0, -1, y_center, z_k, diam_p32, depth_gauche,
+                            _y_g32 = _decaler_y_si_zone_exclusion(
+                                seg_x0, y_center, z_k,
+                                values.get('zone_exclusion_lamello'), 0, interior_depth,
+                                marge_cm=_marge_p32)
+                            holes.append(('X', seg_x0, -1, _y_g32, z_k, diam_p32, depth_gauche,
                                            'Perçage32 Compart {} Gauche {} {:02d}'.format(bay_i + 1, tag, k + 1)))
                         if depth_droite > 0:
-                            holes.append(('X', seg_x1, 1, y_center, z_k, diam_p32, depth_droite,
+                            _y_d32 = _decaler_y_si_zone_exclusion(
+                                seg_x1, y_center, z_k,
+                                values.get('zone_exclusion_lamello'), 0, interior_depth,
+                                marge_cm=_marge_p32)
+                            holes.append(('X', seg_x1, 1, _y_d32, z_k, diam_p32, depth_droite,
                                            'Perçage32 Compart {} Droite {} {:02d}'.format(bay_i + 1, tag, k + 1)))
             # Trous ajoutes UNIQUEMENT pour une charniere (absents de la
             # grille normale, ex. masques ou colonne en systeme 64/Off) :
