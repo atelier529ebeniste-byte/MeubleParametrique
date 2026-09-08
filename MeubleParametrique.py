@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.75'
+ADDIN_VERSION = '1.76'
 
 app = None
 ui = None
@@ -2985,7 +2985,7 @@ def update_field_visibility(inputs):
 # memoire pour CETTE session ne peut pas etre change a chaud).
 UPDATE_FILES = (
     'MeubleParametrique.py', 'meuble_layout.py', 'meuble_geometry.py',
-    'meuble_persistence.py')
+    'meuble_persistence.py', 'apercu_meuble.html')
 
 
 def _extract_version(file_path):
@@ -3037,9 +3037,15 @@ def _find_drive_update_folder():
     return None
 
 
+# Les fichiers sont a la RACINE du depot (verifie : /main/MeubleParametrique.py
+# repond 200 ; /main/MeubleParametrique/MeubleParametrique.py -- avec un
+# sous-dossier en trop -- repond 404). Bug corrige le 08/09/2026 :
+# l'URL contenait un segment '/MeubleParametrique/' en double, ce qui
+# faisait echouer silencieusement (except Exception: pass) TOUTE
+# synchronisation GitHub sur une machine sans Google Drive.
 GITHUB_RAW_BASE = (
     'https://raw.githubusercontent.com/atelier529ebeniste-byte/'
-    'MeubleParametrique/main/MeubleParametrique/')
+    'MeubleParametrique/main/')
 GITHUB_ETAG_MARKER = os.path.join(SCRIPT_DIR, '.github_sync_state.json')
 
 
