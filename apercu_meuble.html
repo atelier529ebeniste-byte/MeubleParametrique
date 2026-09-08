@@ -83,6 +83,7 @@
 </div>
 <script>
 var derniereDonnees = null;
+var totalProjetChant = null;
 var vueActuelle = 'face';
 var vueChangee = false;
 var coupeActive = false;
@@ -163,6 +164,11 @@ document.querySelectorAll('.onglet').forEach(function(el) {
     document.getElementById('coupeZone').style.display = (estListe || estChant) ? 'none' : 'flex';
     document.getElementById('listeControles').style.display = estListe ? 'flex' : 'none';
     if (derniereDonnees) dessiner(derniereDonnees);
+    if (estChant && window.adsk && typeof adsk.fusionSendData === 'function') {
+      totalProjetChant = null;
+      adsk.fusionSendData('demandeTotalProjet', '');
+      if (derniereDonnees) dessinerChant(derniereDonnees);
+    }
   });
 });
 
@@ -316,8 +322,11 @@ function _calculerChant(donnees) {
   var lignes = [];
   var totalMm = 0;
   function ajouter(libelle, longueurMm, nomPiece) {
-    totalMm += longueurMm;
-    lignes.push({ libelle: libelle, nom: nomPiece, mm: longueurMm });
+    // +40mm de marge par longueur de chant (chute/ajustement a
+    // la coupe de chaque brin), pas seulement sur le total.
+    var longueurAvecMarge = longueurMm + 40;
+    totalMm += longueurAvecMarge;
+    lignes.push({ libelle: libelle, nom: nomPiece, mm: longueurAvecMarge });
   }
   pieces.forEach(function(p) {
     var nom = p.nom || '';
@@ -331,15 +340,24 @@ function _calculerChant(donnees) {
       // Chant de face des etageres fixe/mobile : leur largeur.
       ajouter('Chant de face', largeur, nom);
     } else if (nom === 'Côté gauche' || nom === 'Côté droit') {
-      // Chant de face (hauteur) + dessus/dessous (2 x profondeur).
+      // Chant de face avant uniquement (meme regle que
+      // Dessus/Dessous du caisson principal).
       ajouter('Chant de face', hauteur, nom);
-      ajouter('Dessus/dessous (x2)', 2 * profondeur, nom);
     } else if (nom.indexOf('Montant intermédiaire') === 0) {
       // Chant de face des montants intermediaires : leur hauteur.
       ajouter('Chant de face', hauteur, nom);
+    } else if (nom.indexOf('Côté G') !== -1 || nom.indexOf('Côté D') !== -1) {
+      // Cotes du caisson de tiroir : meme regle dessus/dessous
+      // (2 x profondeur) que les cotes exterieurs du meuble.
+      ajouter('Dessus/dessous (x2)', 2 * profondeur, nom);
     } else if (nom.indexOf('Traverse avant') !== -1 || nom.indexOf('Traverse arrière') !== -1) {
       // Dessus des traverses avant/arriere du caisson de tiroir.
       ajouter('Dessus', largeur, nom);
+    } else if (nom === 'Dessus' || nom === 'Dessous') {
+      // Traverses haute/basse du meuble (Dessus/Dessous du
+      // caisson principal) : uniquement la face avant, comme
+      // le chant de face des cotes/etageres (pas les 4 cotes).
+      ajouter('Chant de face', largeur, nom);
     }
   });
   return { totalMm: totalMm, lignes: lignes };
@@ -356,7 +374,20 @@ function dessinerChant(donnees) {
   var resultat = _calculerChant(donnees);
   var totalM = resultat.totalMm / 1000;
   var html = '<div style="font-size:20px; font-weight:bold; color:#7a4a1f; margin-bottom:10px;">'
-    + 'Total chant : ' + totalM.toFixed(2) + ' m</div>';
+    + 'Total chant (ce meuble) : ' + totalM.toFixed(2) + ' m</div>';
+  if (totalProjetChant === null) {
+    html += '<div style="font-size:13px; color:#8a7a5f; margin-bottom:14px;">Calcul du total projet en cours…</div>';
+  } else {
+    var totalProjetM = totalProjetChant.total_mm / 1000;
+    html += '<div style="font-size:16px; font-weight:bold; color:#3f6fa0; margin-bottom:4px;">'
+      + 'Total chant (tout le projet) : ' + totalProjetM.toFixed(2) + ' m</div>';
+    html += '<table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:14px;">';
+    (totalProjetChant.par_meuble || []).forEach(function(m) {
+      html += '<tr><td style="padding:2px 8px;">' + m.nom + '</td>'
+        + '<td style="padding:2px 8px; text-align:right;">' + (m.total_mm/1000).toFixed(2) + ' m</td></tr>';
+    });
+    html += '</table>';
+  }
   html += '<table style="width:100%; border-collapse:collapse; font-size:12px;">';
   html += '<thead><tr><th style="text-align:left; border-bottom:1px solid #d8cdb8; padding:4px 8px;">Pièce</th>'
     + '<th style="text-align:left; border-bottom:1px solid #d8cdb8; padding:4px 8px;">Chant</th>'
@@ -509,6 +540,9 @@ window.fusionJavaScriptHandler = {
     try {
       if (action === 'apercu') {
         dessiner(JSON.parse(data));
+      } else if (action === 'totalProjetChant') {
+        totalProjetChant = JSON.parse(data);
+        if (vueActuelle === 'chant' && derniereDonnees) dessinerChant(derniereDonnees);
       }
       return 'OK';
     } catch (e) {

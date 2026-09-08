@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.71'
+ADDIN_VERSION = '1.75'
 
 app = None
 ui = None
@@ -2566,6 +2566,69 @@ def _coupes_onglet_par_panneau(miter_cuts):
     return par_panneau
 
 
+def _calculer_chant_une_piece(nom, type_, largeur_mm, profondeur_mm, hauteur_mm):
+    """Reproduit EXACTEMENT les regles JS de
+    apercu_meuble.html/_calculerChant (a maintenir synchronisees
+    en cas de modification de l'une ou l'autre). Renvoie une
+    liste de (libelle, longueur_mm_avec_marge) pour cette piece,
+    vide si elle n'a pas de chant a compter."""
+    marge = 40.0
+    resultats = []
+    if type_ == 'porte' or (type_ == 'tiroir' and 'Façade' in nom):
+        resultats.append(('4 côtés', 2 * (largeur_mm + hauteur_mm) + marge))
+    elif type_ == 'etagere':
+        resultats.append(('Chant de face', largeur_mm + marge))
+    elif nom in ('Côté gauche', 'Côté droit'):
+        resultats.append(('Chant de face', hauteur_mm + marge))
+    elif nom.startswith('Montant intermédiaire'):
+        resultats.append(('Chant de face', hauteur_mm + marge))
+    elif 'Côté G' in nom or 'Côté D' in nom:
+        resultats.append(('Dessus/dessous (x2)', 2 * profondeur_mm + marge))
+    elif 'Traverse avant' in nom or 'Traverse arrière' in nom:
+        resultats.append(('Dessus', largeur_mm + marge))
+    elif nom in ('Dessus', 'Dessous'):
+        resultats.append(('Chant de face', largeur_mm + marge))
+    return resultats
+
+
+def calculer_chant_tous_meubles(design):
+    """Parcourt tous les meubles du document (composants racine
+    portant l'attribut de parametres MeubleParametrique), recalcule
+    leur agencement (compute_layout) et applique les regles de
+    chant a chaque piece. Renvoie un dict
+    {'total_mm': float, 'par_meuble': [{'nom', 'total_mm'}, ...]}.
+    Un meuble individuel dont le recalcul echoue (attributs
+    corrompus, etc.) est ignore plutot que de faire echouer le
+    total entier."""
+    total_mm = 0.0
+    par_meuble = []
+    root = design.rootComponent
+    for occ in root.occurrences:
+        comp = occ.component
+        attr = comp.attributes.itemByName(ATTR_GROUP, ATTR_PARAMS)
+        if not attr or not attr.value:
+            continue
+        try:
+            values = json.loads(attr.value)
+            layout = compute_layout(values)
+            pieces = _panneaux_vue_face(layout)
+            total_meuble_mm = 0.0
+            for p in pieces:
+                nom = p.get('nom', '')
+                type_ = p.get('type', 'panneau')
+                largeur = abs(p.get('x1', 0) - p.get('x0', 0))
+                profondeur = abs(p.get('y1', 0) - p.get('y0', 0))
+                hauteur = abs(p.get('z1', 0) - p.get('z0', 0))
+                for _libelle, longueur in _calculer_chant_une_piece(
+                        nom, type_, largeur, profondeur, hauteur):
+                    total_meuble_mm += longueur
+            total_mm += total_meuble_mm
+            par_meuble.append({'nom': comp.name, 'total_mm': total_meuble_mm})
+        except Exception:
+            continue
+    return {'total_mm': total_mm, 'par_meuble': par_meuble}
+
+
 class ApercuHTMLEventHandler(adsk.core.HTMLEventHandler):
     """Recoit les messages envoyes par le JS de la palette Apercu
     via adsk.fusionSendData(action, data) (voir apercu_meuble.html,
@@ -2604,6 +2667,13 @@ class ApercuHTMLEventHandler(adsk.core.HTMLEventHandler):
                     with io.open(chemin, 'w', encoding='utf-8') as f:
                         f.write(args.data)
                     ui.messageBox('Liste enregistrée :\n{}'.format(chemin))
+            elif args.action == 'demandeTotalProjet':
+                design = get_design()
+                if design:
+                    resultat = calculer_chant_tous_meubles(design)
+                    pal = ui.palettes.itemById(APERCU_PALETTE_ID)
+                    if pal:
+                        pal.sendInfoToHTML('totalProjetChant', json.dumps(resultat))
         except Exception:
             if ui:
                 ui.messageBox(
