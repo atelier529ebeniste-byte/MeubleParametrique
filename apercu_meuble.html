@@ -59,6 +59,7 @@
     <div class="onglet" data-vue="cote">Côté</div>
     <div class="onglet" data-vue="dessus">Dessus</div>
     <div class="onglet" data-vue="liste">Liste</div>
+    <div class="onglet" data-vue="chant">Chant</div>
   </div>
   <div id="coupeZone">
     <span id="coupeToggle">Coupe</span>
@@ -78,6 +79,7 @@
   </div>
   <div id="svgHolder"><div id="vide">En attente des données du meuble…</div></div>
   <div id="listeHolder" style="display:none;"></div>
+  <div id="chantHolder" style="display:none; padding:12px; font-size:12px; color:#4a3b2a; overflow:auto;"></div>
 </div>
 <script>
 var derniereDonnees = null;
@@ -157,7 +159,8 @@ document.querySelectorAll('.onglet').forEach(function(el) {
     vueChangee = true;
     zoom = 1; panX = 0; panY = 0;
     var estListe = (vueActuelle === 'liste');
-    document.getElementById('coupeZone').style.display = estListe ? 'none' : 'flex';
+    var estChant = (vueActuelle === 'chant');
+    document.getElementById('coupeZone').style.display = (estListe || estChant) ? 'none' : 'flex';
     document.getElementById('listeControles').style.display = estListe ? 'flex' : 'none';
     if (derniereDonnees) dessiner(derniereDonnees);
   });
@@ -298,11 +301,85 @@ document.getElementById('exportCsv').addEventListener('click', function() {
   }
 });
 
+// Calcule le total de chant (bordure de chant) necessaire, en
+// metres lineaires, sur les elements suivants :
+//  - chant de face (bord avant, Y=0) des montants exterieurs,
+//    montants intermediaires (longueur = leur hauteur) et
+//    etageres fixe/mobile (longueur = leur largeur) ;
+//  - les 4 cotes (perimetre) des portes et facades de tiroir ;
+//  - dessus ET dessous des cotes exterieurs (2 x profondeur
+//    chacun, PAS les montants intermediaires) ;
+//  - le dessus des traverses avant/arriere du caisson de
+//    tiroir (longueur = leur largeur).
+function _calculerChant(donnees) {
+  var pieces = donnees.panneaux || [];
+  var lignes = [];
+  var totalMm = 0;
+  function ajouter(libelle, longueurMm, nomPiece) {
+    totalMm += longueurMm;
+    lignes.push({ libelle: libelle, nom: nomPiece, mm: longueurMm });
+  }
+  pieces.forEach(function(p) {
+    var nom = p.nom || '';
+    var largeur = Math.abs((p.x1 || 0) - (p.x0 || 0));
+    var profondeur = Math.abs((p.y1 || 0) - (p.y0 || 0));
+    var hauteur = Math.abs((p.z1 || 0) - (p.z0 || 0));
+    if (p.type === 'porte' || (p.type === 'tiroir' && nom.indexOf('Façade') !== -1)) {
+      // 4 cotes (perimetre) des portes et facades de tiroir.
+      ajouter('4 côtés', 2 * (largeur + hauteur), nom);
+    } else if (p.type === 'etagere') {
+      // Chant de face des etageres fixe/mobile : leur largeur.
+      ajouter('Chant de face', largeur, nom);
+    } else if (nom === 'Côté gauche' || nom === 'Côté droit') {
+      // Chant de face (hauteur) + dessus/dessous (2 x profondeur).
+      ajouter('Chant de face', hauteur, nom);
+      ajouter('Dessus/dessous (x2)', 2 * profondeur, nom);
+    } else if (nom.indexOf('Montant intermédiaire') === 0) {
+      // Chant de face des montants intermediaires : leur hauteur.
+      ajouter('Chant de face', hauteur, nom);
+    } else if (nom.indexOf('Traverse avant') !== -1 || nom.indexOf('Traverse arrière') !== -1) {
+      // Dessus des traverses avant/arriere du caisson de tiroir.
+      ajouter('Dessus', largeur, nom);
+    }
+  });
+  return { totalMm: totalMm, lignes: lignes };
+}
+
+function dessinerChant(donnees) {
+  derniereDonnees = donnees;
+  document.getElementById('svgHolder').style.display = 'none';
+  document.getElementById('listeHolder').style.display = 'none';
+  var holder = document.getElementById('chantHolder');
+  holder.style.display = 'block';
+  document.getElementById('dims').textContent =
+    ' ' + Math.round(donnees.L_mm) + ' x ' + Math.round(donnees.H_mm) + ' x ' + Math.round(donnees.P_mm) + ' mm';
+  var resultat = _calculerChant(donnees);
+  var totalM = resultat.totalMm / 1000;
+  var html = '<div style="font-size:20px; font-weight:bold; color:#7a4a1f; margin-bottom:10px;">'
+    + 'Total chant : ' + totalM.toFixed(2) + ' m</div>';
+  html += '<table style="width:100%; border-collapse:collapse; font-size:12px;">';
+  html += '<thead><tr><th style="text-align:left; border-bottom:1px solid #d8cdb8; padding:4px 8px;">Pièce</th>'
+    + '<th style="text-align:left; border-bottom:1px solid #d8cdb8; padding:4px 8px;">Chant</th>'
+    + '<th style="text-align:right; border-bottom:1px solid #d8cdb8; padding:4px 8px;">Longueur (mm)</th></tr></thead><tbody>';
+  resultat.lignes.forEach(function(l) {
+    html += '<tr><td style="padding:4px 8px; border-bottom:1px solid #e5ddca;">' + l.nom + '</td>'
+      + '<td style="padding:4px 8px; border-bottom:1px solid #e5ddca;">' + l.libelle + '</td>'
+      + '<td style="padding:4px 8px; border-bottom:1px solid #e5ddca; text-align:right;">' + Math.round(l.mm) + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  holder.innerHTML = html;
+}
+
 function dessiner(donnees) {
   if (vueActuelle === 'liste') {
     dessinerListe(donnees);
     return;
   }
+  if (vueActuelle === 'chant') {
+    dessinerChant(donnees);
+    return;
+  }
+  document.getElementById('chantHolder').style.display = 'none';
   document.getElementById('listeHolder').style.display = 'none';
   document.getElementById('svgHolder').style.display = 'block';
   var v = VUES[vueActuelle];

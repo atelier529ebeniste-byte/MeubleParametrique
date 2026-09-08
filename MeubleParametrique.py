@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.68'
+ADDIN_VERSION = '1.71'
 
 app = None
 ui = None
@@ -510,6 +510,7 @@ def apply_meuble_selection(inputs, override_values=None):
             values.get('prise_main_portes'), values.get('prise_main_tiroirs'),
             inputs=inputs)
     update_field_visibility(inputs)
+    update_petite_diagonale(inputs)
 
 
 # ---------------------------------------------------------------------------
@@ -1989,6 +1990,42 @@ def apply_button_clicked(args):
 # Construction de la boîte de dialogue (champs communs Créer / Modifier)
 # ---------------------------------------------------------------------------
 
+def update_petite_diagonale(inputs):
+    """Recalcule et affiche les diagonales de la face (Largeur
+    x Hauteur totale) et du cote (Profondeur x Hauteur totale),
+    hauteur totale incluant le socle si actif, ainsi que la
+    Hauteur de plafond Max (la plus petite des 2 diagonales +
+    10mm de marge), a partir des valeurs actuellement affichees
+    de Hauteur/Largeur/Profondeur/Socle. Echoue silencieusement
+    si les champs necessaires ne sont pas encore presents dans
+    le dialogue (n'est qu'un affichage informatif, ne doit
+    jamais bloquer la construction du dialogue)."""
+    import math
+    txt_face = inputs.itemById('textDiagonaleFace')
+    txt_cote = inputs.itemById('textDiagonaleCote')
+    txt_plafond = inputs.itemById('textHauteurPlafondMax')
+    champ_h = inputs.itemById('champHauteur')
+    champ_l = inputs.itemById('champLargeur')
+    champ_p = inputs.itemById('champProfondeur')
+    if not (txt_face and txt_cote and txt_plafond and champ_h and champ_l and champ_p):
+        return
+    champ_socle = inputs.itemById('champSocle')
+    chk_socle = inputs.itemById('checkSocleActif')
+    h_mm = champ_h.value * 10.0
+    l_mm = champ_l.value * 10.0
+    p_mm = champ_p.value * 10.0
+    socle_mm = (
+        champ_socle.value * 10.0
+        if champ_socle and chk_socle and chk_socle.value else 0.0)
+    h_total_mm = h_mm + socle_mm
+    diag_face_mm = math.sqrt(h_total_mm ** 2 + l_mm ** 2)
+    diag_cote_mm = math.sqrt(h_total_mm ** 2 + p_mm ** 2)
+    txt_face.formattedText = '{:.1f} mm'.format(diag_face_mm)
+    txt_cote.formattedText = '{:.1f} mm'.format(diag_cote_mm)
+    plafond_max_mm = min(diag_face_mm, diag_cote_mm) + 10.0
+    txt_plafond.formattedText = '{:.1f} mm'.format(plafond_max_mm)
+
+
 def add_meuble_fields(inputs, cur_mm_func):
     """Construit la boîte de dialogue en 4 volets (onglets) : Caisson (avec
     deux sous-volets rabattables Dimensions et Étagères), Portes, Tiroirs et
@@ -2011,6 +2048,13 @@ def add_meuble_fields(inputs, cur_mm_func):
         bool(cur_mm_func('coupe_onglet', False)))
     for field_id, key, default_mm, min_mm, max_mm, label in FIELDS_CAISSON[3:4]:
         add_value_field(gd, field_id, label, mm_to_cm(cur_mm_func(key, default_mm)), min_mm, max_mm)
+    gd.addTextBoxCommandInput(
+        'textDiagonaleFace', 'Diagonale de la face', '', 1, True)
+    gd.addTextBoxCommandInput(
+        'textDiagonaleCote', 'Diagonale du côté', '', 1, True)
+    gd.addTextBoxCommandInput(
+        'textHauteurPlafondMax', 'Hauteur de plafond Max', '', 1, True)
+    update_petite_diagonale(inputs)
 
     group_fond = tc.addGroupCommandInput('groupFond', 'Fond')
     group_fond.isExpanded = True
@@ -3227,6 +3271,11 @@ class CreateInputChangedHandler(adsk.core.InputChangedEventHandler):
                     'checkSocleActif', 'checkCharniereAuto', 'checkCoupeOnglet',
                     'dropdownPoseFond'):
                 update_field_visibility(full_inputs)
+                if args.input.id == 'checkSocleActif':
+                    update_petite_diagonale(full_inputs)
+            elif args.input.id in (
+                    'champHauteur', 'champLargeur', 'champProfondeur', 'champSocle'):
+                update_petite_diagonale(full_inputs)
             elif (args.input.id.startswith('dropdownPercage32Colonne')
                   and args.input.id.endswith('Systeme')):
                 update_field_visibility(full_inputs)
