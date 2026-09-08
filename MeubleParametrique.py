@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.76'
+ADDIN_VERSION = '1.78'
 
 app = None
 ui = None
@@ -2985,7 +2985,7 @@ def update_field_visibility(inputs):
 # memoire pour CETTE session ne peut pas etre change a chaud).
 UPDATE_FILES = (
     'MeubleParametrique.py', 'meuble_layout.py', 'meuble_geometry.py',
-    'meuble_persistence.py', 'apercu_meuble.html')
+    'meuble_persistence.py')
 
 
 def _extract_version(file_path):
@@ -3039,10 +3039,7 @@ def _find_drive_update_folder():
 
 # Les fichiers sont a la RACINE du depot (verifie : /main/MeubleParametrique.py
 # repond 200 ; /main/MeubleParametrique/MeubleParametrique.py -- avec un
-# sous-dossier en trop -- repond 404). Bug corrige le 08/09/2026 :
-# l'URL contenait un segment '/MeubleParametrique/' en double, ce qui
-# faisait echouer silencieusement (except Exception: pass) TOUTE
-# synchronisation GitHub sur une machine sans Google Drive.
+# sous-dossier en trop -- repond 404).
 GITHUB_RAW_BASE = (
     'https://raw.githubusercontent.com/atelier529ebeniste-byte/'
     'MeubleParametrique/main/')
@@ -3122,12 +3119,17 @@ def _check_and_apply_updates_github():
 
 
 def _check_and_apply_updates():
-    """Point d'entree unique : essaie d'abord un dossier Google Drive
-    synchronise localement (rapide, pas de reseau) ; si aucun n'est
-    trouve, se rabat sur le depot GitHub public via internet."""
+    """Point d'entree unique : essaie d'abord GitHub (source
+    publique de reference, via internet) ; si l'appel echoue
+    completement (pas d'acces internet, etc. -- renvoie une
+    liste vide sans lever d'exception), se rabat sur un dossier
+    Google Drive synchronise localement s'il en existe un."""
+    maj_github = _check_and_apply_updates_github()
+    if maj_github:
+        return maj_github
     if _find_drive_update_folder():
         return _check_and_apply_updates_drive()
-    return _check_and_apply_updates_github()
+    return maj_github
 
 
 def run(context):
