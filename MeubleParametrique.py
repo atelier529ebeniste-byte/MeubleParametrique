@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.94'
+ADDIN_VERSION = '1.97'
 
 # Icone d'alerte (triangle jaune, fournie par l'utilisateur), encodee
 # en base64 pour etre embarquee directement dans un TextBoxCommandInput
@@ -2069,7 +2069,8 @@ def add_meuble_fields(inputs, cur_mm_func):
         'textDiagonaleCote', 'Diagonale du côté', '', 1, True)
     _txt_diag_cote.isVisible = False
     gd.addBoolValueInput(
-        'buttonHauteurPlafondMin', 'Hauteur de Plafond Minimum',
+        'buttonHauteurPlafondMin',
+        'Hauteur de plafond minimum',
         False, RESOURCE_FOLDER_ALERTE, False)
     update_petite_diagonale(inputs)
 
