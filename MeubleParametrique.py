@@ -11,22 +11,15 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '1.97'
+ADDIN_VERSION = '2.06'
 
-# Icone d'alerte (triangle jaune, fournie par l'utilisateur), encodee
-# en base64 pour etre embarquee directement dans un TextBoxCommandInput
-# (evite toute dependance a un chemin de fichier).
-ICONE_ALERTE_B64 = (
-    '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'
-)
 
 app = None
 ui = None
 handlers = []
 
-# Derniere valeur calculee de la hauteur de plafond minimum (mm),
-# affichee au clic sur le bouton dedie (voir update_petite_diagonale
-# et le gestionnaire de 'buttonHauteurPlafondMin').
+# Derniere valeur calculee de la hauteur de plafond minimum (mm)
+# (voir update_petite_diagonale ; affichee dans textHauteurPlafondMax).
 _dernier_plafond_min_mm = 0.0
 
 # Dossier contenant ce fichier .py, pour retrouver le dossier resources/ à côté
@@ -45,7 +38,6 @@ RESOURCE_FOLDER_REFRESH = os.path.join(SCRIPT_DIR, 'resources', 'Refresh')
 RESOURCE_FOLDER_APERCU = os.path.join(SCRIPT_DIR, 'resources', 'Apercu')
 RESOURCE_FOLDER_SAVE_DEFAULT = os.path.join(SCRIPT_DIR, 'resources', 'EnregistrerDefaut')
 RESOURCE_FOLDER_MEUBLE = os.path.join(SCRIPT_DIR, 'resources', 'MeubleParametrique')
-RESOURCE_FOLDER_ALERTE = os.path.join(SCRIPT_DIR, 'resources', 'Alerte')
 RESOURCE_FOLDER_APPLIQUER = os.path.join(SCRIPT_DIR, 'resources', 'Appliquer')
 RESOURCE_FOLDER_SUPPRIMER_PRESET = os.path.join(SCRIPT_DIR, 'resources', 'SupprimerPreset')
 # Presets : ensemble de valeurs nomme, enregistrable/rechargeable depuis
@@ -2017,11 +2009,11 @@ def update_petite_diagonale(inputs):
     import math
     txt_face = inputs.itemById('textDiagonaleFace')
     txt_cote = inputs.itemById('textDiagonaleCote')
-    btn_plafond = inputs.itemById('buttonHauteurPlafondMin')
+    txt_plafond = inputs.itemById('textHauteurPlafondMax')
     champ_h = inputs.itemById('champHauteur')
     champ_l = inputs.itemById('champLargeur')
     champ_p = inputs.itemById('champProfondeur')
-    if not (txt_face and txt_cote and btn_plafond and champ_h and champ_l and champ_p):
+    if not (txt_face and txt_cote and txt_plafond and champ_h and champ_l and champ_p):
         return
     champ_socle = inputs.itemById('champSocle')
     chk_socle = inputs.itemById('checkSocleActif')
@@ -2038,6 +2030,9 @@ def update_petite_diagonale(inputs):
     txt_cote.formattedText = '{:.1f} mm'.format(diag_cote_mm)
     plafond_max_mm = min(diag_face_mm, diag_cote_mm) + 10.0
     _dernier_plafond_min_mm = plafond_max_mm
+    txt_plafond.formattedText = (
+        '<div style="font-style:italic; color:#CC0000;">'
+        '{:.1f} mm</div>'.format(plafond_max_mm))
 
 
 def add_meuble_fields(inputs, cur_mm_func):
@@ -2057,6 +2052,8 @@ def add_meuble_fields(inputs, cur_mm_func):
     # le reste).
     for field_id, key, default_mm, min_mm, max_mm, label in FIELDS_CAISSON[:3]:
         add_value_field(gd, field_id, label, mm_to_cm(cur_mm_func(key, default_mm)), min_mm, max_mm)
+    gd.addTextBoxCommandInput(
+        'textHauteurPlafondMax', 'Hauteur de Plafond Minimum', '', 1, True)
     gd.addBoolValueInput(
         'checkCoupeOnglet', "Coupe d'onglet", True, '',
         bool(cur_mm_func('coupe_onglet', False)))
@@ -2068,10 +2065,6 @@ def add_meuble_fields(inputs, cur_mm_func):
     _txt_diag_cote = gd.addTextBoxCommandInput(
         'textDiagonaleCote', 'Diagonale du côté', '', 1, True)
     _txt_diag_cote.isVisible = False
-    gd.addBoolValueInput(
-        'buttonHauteurPlafondMin',
-        'Hauteur de plafond minimum',
-        False, RESOURCE_FOLDER_ALERTE, False)
     update_petite_diagonale(inputs)
 
     group_fond = tc.addGroupCommandInput('groupFond', 'Fond')
@@ -3325,13 +3318,6 @@ class CreateInputChangedHandler(adsk.core.InputChangedEventHandler):
                 update_apercu(full_inputs)
             elif args.input.id == 'buttonEnregistrerDefaut':
                 save_current_as_default(full_inputs)
-            elif args.input.id == 'buttonHauteurPlafondMin':
-                btn_pm = full_inputs.itemById('buttonHauteurPlafondMin')
-                if btn_pm:
-                    btn_pm.value = False
-                ui.messageBox(
-                    'AS TU VÉRIFIÉ LA HAUTEUR DU PLAFOND !!!\n\n'
-                    'Hauteur de Plafond Minimum : {:.1f} mm'.format(_dernier_plafond_min_mm))
             elif args.input.id == 'buttonApercu':
                 pal = ui.palettes.itemById(APERCU_PALETTE_ID)
                 _premiere_creation = not pal
