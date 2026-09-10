@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '2.08'
+ADDIN_VERSION = '2.10'
 
 
 app = None
@@ -2116,10 +2116,10 @@ def add_meuble_fields(inputs, cur_mm_func):
     dd_pose_socle.listItems.add(
         'En applique', _pose_socle_actuel == 'applique')
 
-    group_decoupe = tc.addGroupCommandInput('groupDecoupeSolide', 'Découpe')
+    group_decoupe = tc.addGroupCommandInput('groupDecoupeSolide', 'Modifier')
     group_decoupe.isExpanded = True
     sel_solide = group_decoupe.children.addSelectionInput(
-        'selectSolideSoustraire', 'Solides à soustraire',
+        'selectSolideSoustraire', 'Soustraire des solides',
         'Sélectionner un ou plusieurs corps solides existants (murs, tuyaux, etc.) à évider du meuble.\n'
         'La découpe est reappliquee automatiquement a chaque reconstruction.')
     sel_solide.addSelectionFilter('SolidBodies')
