@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '2.06'
+ADDIN_VERSION = '2.08'
 
 
 app = None
@@ -2996,7 +2996,19 @@ def update_field_visibility(inputs):
 # memoire pour CETTE session ne peut pas etre change a chaud).
 UPDATE_FILES = (
     'MeubleParametrique.py', 'meuble_layout.py', 'meuble_geometry.py',
-    'meuble_persistence.py')
+    'meuble_persistence.py', 'apercu_meuble.html')
+
+# Fichiers binaires (icones des boutons) : synchronises separement
+# de UPDATE_FILES (texte) car ils necessitent la creation des
+# sous-dossiers resources/XXX/ s'ils n'existent pas encore. Chemins
+# relatifs a SCRIPT_DIR, avec '/' (convertis en os.sep a l'usage).
+UPDATE_RESOURCE_FILES = tuple(
+    'resources/{}/{}'.format(dossier, fichier)
+    for dossier in (
+        'Apercu', 'Appliquer', 'EnregistrerDefaut', 'MeubleParametrique',
+        'MiseAJourDisponibleV2', 'OuvrirPreset', 'Refresh', 'SupprimerPreset')
+    for fichier in ('16x16.png', '16x16@2x.png', '32x32.png', '32x32@2x.png')
+) + ('resources/logo_atelier_10pct.png',)
 
 
 def _extract_version(file_path):
@@ -3103,8 +3115,8 @@ def _check_and_apply_updates_github():
                 etat = json.load(f)
         except Exception:
             etat = {}
-    for fname in UPDATE_FILES:
-        dst = os.path.join(SCRIPT_DIR, fname)
+    for fname in UPDATE_FILES + UPDATE_RESOURCE_FILES:
+        dst = os.path.join(SCRIPT_DIR, *fname.split('/'))
         try:
             req = urllib.request.Request(GITHUB_RAW_BASE + fname)
             with urllib.request.urlopen(req, timeout=4) as resp:
@@ -3114,6 +3126,7 @@ def _check_and_apply_updates_github():
                 continue
             deja_synchro = etat.get(fname) == etag_distant
             if not deja_synchro:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
                 with open(dst, 'wb') as f:
                     f.write(distant)
                 etat[fname] = etag_distant
