@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '2.10'
+ADDIN_VERSION = '2.12'
 
 
 app = None
@@ -76,6 +76,7 @@ from meuble_geometry import (
     build_meuble_body, build_door_component,
     GenerationCancelled, _tick, apply_solid_subtraction,
     calc_zone_exclusion_lamello, open_door_component_if_needed,
+    apply_solid_assembly,
 )
 from meuble_persistence import (
     DEFAULTS_FILE, ATTR_GROUP, ATTR_PARAMS, ATTR_DOORS, FIELDS_CAISSON,
@@ -289,6 +290,13 @@ def generate_meuble(root, design, values, meuble_comp, meuble_transform, progres
     apply_solid_subtraction(
         meuble_comp, values.get('solides_soustraits_tokens'), design)
 
+    # Assemblage par perçages Lamello sur les faces en contact
+    # avec un solide externe (mur, tuyau, etc.), APRES la
+    # soustraction (les faces de contact potentiellement modifiees
+    # par une decoupe doivent etre a jour avant detection).
+    apply_solid_assembly(
+        meuble_comp, values.get('solides_assembles_tokens'), design)
+
     try:
         meuble_comp.attributes.add(ATTR_GROUP, ATTR_PARAMS, json.dumps(values))
         meuble_comp.attributes.add(ATTR_GROUP, ATTR_DOORS, ','.join(door_names))
@@ -406,6 +414,19 @@ def apply_meuble_selection(inputs, override_values=None):
                     _ent_a = _design_a.findEntityByToken(_tok_a)
                     if _ent_a:
                         sel_solide_a.addSelection(_ent_a[0])
+                except Exception:
+                    pass
+    sel_solide_assemble_a = inputs.itemById('selectSolideAssembler')
+    if sel_solide_assemble_a:
+        sel_solide_assemble_a.clearSelection()
+        _tokens_assemble_a = values.get('solides_assembles_tokens') or []
+        if _tokens_assemble_a:
+            _design_a2 = adsk.core.Application.get().activeProduct
+            for _tok_a2 in _tokens_assemble_a:
+                try:
+                    _ent_a2 = _design_a2.findEntityByToken(_tok_a2)
+                    if _ent_a2:
+                        sel_solide_assemble_a.addSelection(_ent_a2[0])
                 except Exception:
                     pass
     chk_onglet = inputs.itemById('checkCoupeOnglet')
@@ -2140,6 +2161,24 @@ def add_meuble_fields(inputs, cur_mm_func):
             except Exception:
                 pass
 
+    sel_solide_assemble = group_decoupe.children.addSelectionInput(
+        'selectSolideAssembler', 'Assembler des solides',
+        'Sélectionner un ou plusieurs corps solides existants à assembler avec le meuble.\n'
+        'Un assemblage par perçages Lamello est cree sur les faces en contact, '
+        'reappliqué automatiquement a chaque reconstruction.')
+    sel_solide_assemble.addSelectionFilter('SolidBodies')
+    sel_solide_assemble.setSelectionLimits(0, 0)
+    _tokens_solides_assemble_actuels = cur_mm_func('solides_assembles_tokens', None) or []
+    if _tokens_solides_assemble_actuels:
+        _design_ici2 = adsk.core.Application.get().activeProduct
+        for _tok2 in _tokens_solides_assemble_actuels:
+            try:
+                _ent_solide2 = _design_ici2.findEntityByToken(_tok2)
+                if _ent_solide2:
+                    sel_solide_assemble.addSelection(_ent_solide2[0])
+            except Exception:
+                pass
+
     # --- Volet Montant intermédiaire (deplace hors de Caisson) ----------
     tab_montants = inputs.addTabCommandInput('tabMontants', 'Montant intermédiaire')
     tm = tab_montants.children
@@ -2787,6 +2826,15 @@ def collect_values_mm(inputs):
     # Compatibilite ascendante : garde aussi l'ancien champ singulier
     # (1er solide), au cas ou du code externe/ancien s'y referait.
     values['solide_soustrait_token'] = _tokens_c[0] if _tokens_c else None
+    sel_solide_assemble_c = inputs.itemById('selectSolideAssembler')
+    _tokens_assemble_c = []
+    if sel_solide_assemble_c:
+        for _i in range(sel_solide_assemble_c.selectionCount):
+            try:
+                _tokens_assemble_c.append(sel_solide_assemble_c.selection(_i).entity.entityToken)
+            except Exception:
+                continue
+    values['solides_assembles_tokens'] = _tokens_assemble_c
     chk_onglet = inputs.itemById('checkCoupeOnglet')
     values['coupe_onglet'] = chk_onglet.value if chk_onglet else False
 

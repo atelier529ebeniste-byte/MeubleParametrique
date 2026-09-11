@@ -247,6 +247,29 @@ def add_panel_xz(comp, x0, x1, z0, z1, y_start, y_extent, name, thickness_param=
     return body
 
 
+def drill_hole_y(comp, y_plane, sign, x_center, z_center, diam, depth, name):
+    """Perce un trou cylindrique borgne axe selon Y (assemblage
+    sur une face avant/arriere -- ex. fond, ou face d'un solide
+    assemble), de diametre 'diam' et profondeur 'depth', centre en
+    (x_center, z_center), demarrant au plan y=y_plane et creusant
+    vers +Y (sign=+1) ou -Y (sign=-1). Coordonnees en cm.
+    Convention d'axe verifiee empiriquement (voir historique) :
+    (x_center, -z_center, 0) place correctement le centre du trou
+    en (x_center, y_plane, z_center) dans l'espace du composant."""
+    sketch = comp.sketches.add(comp.xZConstructionPlane)
+    sketch.name = name
+    r = diam / 2.0
+    sketch.sketchCurves.sketchCircles.addByCenterRadius(
+        adsk.core.Point3D.create(x_center, -z_center, 0), r)
+    profile = _largest_profile(sketch)
+    extrudes = comp.features.extrudeFeatures
+    ext_input = extrudes.createInput(profile, adsk.fusion.FeatureOperations.CutFeatureOperation)
+    ext_input.startExtent = adsk.fusion.OffsetStartDefinition.create(
+        adsk.core.ValueInput.createByReal(y_plane))
+    ext_input.setDistanceExtent(False, adsk.core.ValueInput.createByReal(sign * depth))
+    extrudes.add(ext_input)
+
+
 def drill_hole_x(comp, x_plane, sign, y_center, z_center, diam, depth, name):
     """Perce un trou cylindrique borgne axé selon X (assemblage montant/
     traverse), de diamètre 'diam' et profondeur 'depth', centré en
@@ -799,6 +822,130 @@ def apply_solid_subtraction(comp, tokens, design):
                     continue
         except Exception:
             continue
+
+
+LAMELLO_DIAM_ASSEMBLAGE_CM = 0.5
+LAMELLO_DEPTH_ASSEMBLAGE_CM = 0.9
+
+
+def _trouver_faces_contact(corps_cible, corps_solide, tolerance_cm=0.05):
+    """Renvoie la liste des faces PLANES de 'corps_cible' EN
+    CONTACT avec 'corps_solide'. Mesure la distance depuis le
+    CENTROIDE de chaque face (pas depuis n'importe quel point de
+    la face) : mesurer sur la face entiere donnerait la distance
+    minimale ABSOLUE, souvent atteinte a une arete partagee avec
+    une face voisine, meme quand cette face-la n'est pas
+    reellement en vis-a-vis du solide (constate empiriquement :
+    un mur de meme taille qu'un panneau touchait 4 faces au lieu
+    d'une seule a cause des aretes partagees). Le centroide est
+    un bien meilleur indicateur qu'une face entiere est
+    reellement en contact. Echoue silencieusement par face en
+    cas d'erreur de mesure isolee."""
+    app = adsk.core.Application.get()
+    mesure = app.measureManager
+    faces_contact = []
+    for face in corps_cible.faces:
+        try:
+            if face.geometry.objectType != adsk.core.Plane.classType():
+                continue
+            resultat = mesure.measureMinimumDistance(face.centroid, corps_solide)
+            if resultat and resultat.value <= tolerance_cm:
+                faces_contact.append(face)
+        except Exception:
+            continue
+    return faces_contact
+
+
+def apply_solid_assembly(comp, tokens, design):
+    """Pour chaque token de 'tokens' (liste ; un token seul, str,
+    est aussi accepte) qui resout vers un corps solide existant,
+    detecte les faces PLANES des corps du meuble (present dans
+    'comp', y compris les composants imbriques directs -- portes)
+    qui sont EN CONTACT avec ce solide, et perce un trou Lamello
+    (assemblage) au centre de chaque face de contact, creusant
+    VERS L'INTERIEUR du panneau (sens oppose a la normale de la
+    face). Le solide externe lui-meme n'est jamais modifie (il
+    n'appartient pas au meuble). Echoue silencieusement par
+    solide/par face (corps supprime depuis, geometrie non plane,
+    etc.) sans interrompre la reconstruction du reste du meuble."""
+    if not tokens:
+        return
+    if isinstance(tokens, str):
+        tokens = [tokens]
+    # measureMinimumDistance exige des corps QUALIFIES PAR
+    # OCCURRENCE (verifie empiriquement -- un BRepBody obtenu
+    # directement via comp.bRepBodies leve 'invalid argument
+    # geometryOne', meme entre 2 corps du meme composant), pas
+    # les corps bruts d'un composant. On recupere donc
+    # l'occurrence de 'comp' pour qualifier ses propres corps.
+    cibles = []
+    try:
+        occs_comp = design.rootComponent.allOccurrencesByComponent(comp)
+        if occs_comp and occs_comp.count > 0:
+            occ_comp = occs_comp.item(0)
+            cibles.extend(b for b in occ_comp.bRepBodies if b.isValid)
+    except Exception:
+        pass
+    for occ in comp.occurrences:
+        try:
+            cibles.extend(
+                b for b in occ.bRepBodies if b.isValid)
+        except Exception:
+            continue
+    for token in tokens:
+        try:
+            entites = design.findEntityByToken(token)
+            if not entites:
+                continue
+            corps_solide = entites[0]
+            # Comme pour 'cibles' : measureMinimumDistance exige
+            # un corps QUALIFIE PAR OCCURRENCE. Si le token n'en a
+            # pas fourni un (assemblyContext absent), on tente de
+            # le requalifier via l'occurrence de son composant.
+            if not getattr(corps_solide, 'assemblyContext', None):
+                try:
+                    occs_solide = design.rootComponent.allOccurrencesByComponent(
+                        corps_solide.parentComponent)
+                    if occs_solide and occs_solide.count > 0:
+                        occ_solide = occs_solide.item(0)
+                        corps_solide = occ_solide.bRepBodies.itemByName(corps_solide.name)
+                except Exception:
+                    pass
+        except Exception:
+            continue
+        for cible in cibles:
+            try:
+                if cible == corps_solide:
+                    continue
+                faces_contact = _trouver_faces_contact(cible, corps_solide)
+            except Exception:
+                continue
+            for idx_face, face in enumerate(faces_contact):
+                try:
+                    plan = face.geometry
+                    normale = plan.normal
+                    centre = face.centroid
+                    comp_cible = cible.parentComponent
+                    nom = 'Assemblage Lamello {} {} {:02d}'.format(
+                        cible.name, corps_solide.name, idx_face + 1)
+                    ax, ay, az = abs(normale.x), abs(normale.y), abs(normale.z)
+                    if ax >= ay and ax >= az:
+                        sign = -1 if normale.x > 0 else 1
+                        drill_hole_x(
+                            comp_cible, centre.x, sign, centre.y, centre.z,
+                            LAMELLO_DIAM_ASSEMBLAGE_CM, LAMELLO_DEPTH_ASSEMBLAGE_CM, nom)
+                    elif ay >= ax and ay >= az:
+                        sign = -1 if normale.y > 0 else 1
+                        drill_hole_y(
+                            comp_cible, centre.y, sign, centre.x, centre.z,
+                            LAMELLO_DIAM_ASSEMBLAGE_CM, LAMELLO_DEPTH_ASSEMBLAGE_CM, nom)
+                    else:
+                        sign = -1 if normale.z > 0 else 1
+                        drill_hole_z(
+                            comp_cible, centre.z, sign, centre.x, centre.y,
+                            LAMELLO_DIAM_ASSEMBLAGE_CM, LAMELLO_DEPTH_ASSEMBLAGE_CM, nom)
+                except Exception:
+                    continue
 
 
 def build_meuble_body(comp, values, thickness_params=None, progress=None):

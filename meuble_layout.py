@@ -2248,10 +2248,24 @@ def compute_layout(values):
         decale = mm_to_cm(LAMELLO_DECALE_MM)
         front_decale = min(front_margin + decale, back_margin)
         back_decale = max(back_margin - decale, front_margin)
+        positions_brutes = [
+            (front_margin, 'avant'), (front_decale, 'avant décalé'),
+            (back_decale, 'arrière décalé'), (back_margin, 'arrière')]
+        # Au-dela de 600mm de profondeur, un assemblage Lamello
+        # supplementaire est ajoute au centre (meme ecart de
+        # 101mm que les autres paires), pour eviter une grande
+        # zone sans assemblage au milieu d'un meuble tres
+        # profond.
+        if P > mm_to_cm(600):
+            centre_lamello = (front_margin + back_margin) / 2.0
+            demi_decale = decale / 2.0
+            positions_brutes.append(
+                (max(centre_lamello - demi_decale, front_decale), 'centre avant'))
+            positions_brutes.append(
+                (min(centre_lamello + demi_decale, back_decale), 'centre arrière'))
         positions = []
         seen = set()
-        for y_center, tag in ((front_margin, 'avant'), (front_decale, 'avant décalé'),
-                               (back_decale, 'arrière décalé'), (back_margin, 'arrière')):
+        for y_center, tag in positions_brutes:
             key = round(y_center, 4)
             if key not in seen:
                 seen.add(key)
