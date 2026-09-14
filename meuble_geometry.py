@@ -826,58 +826,182 @@ def apply_solid_subtraction(comp, tokens, design):
 
 LAMELLO_DIAM_ASSEMBLAGE_CM = 0.5
 LAMELLO_DEPTH_ASSEMBLAGE_CM = 0.9
+# Memes cotes que les autres assemblages Lamello du meuble (voir
+# LAMELLO_MARGE_DESSUS_DESSOUS_MM/LAMELLO_DECALE_MM dans
+# meuble_layout.py) : 9.5mm du bord de reference, 101mm d'entraxe
+# entre les 2 trous d'une paire.
+LAMELLO_MARGE_ASSEMBLAGE_CM = 0.95
+LAMELLO_DECALE_ASSEMBLAGE_CM = 10.1
 
 
-def _trouver_faces_contact(corps_cible, corps_solide, tolerance_cm=0.05):
-    """Renvoie la liste des faces PLANES de 'corps_cible' EN
-    CONTACT avec 'corps_solide'. Mesure la distance depuis le
-    CENTROIDE de chaque face (pas depuis n'importe quel point de
-    la face) : mesurer sur la face entiere donnerait la distance
-    minimale ABSOLUE, souvent atteinte a une arete partagee avec
-    une face voisine, meme quand cette face-la n'est pas
-    reellement en vis-a-vis du solide (constate empiriquement :
-    un mur de meme taille qu'un panneau touchait 4 faces au lieu
-    d'une seule a cause des aretes partagees). Le centroide est
-    un bien meilleur indicateur qu'une face entiere est
-    reellement en contact. Echoue silencieusement par face en
-    cas d'erreur de mesure isolee."""
+def _paire_positions_lamello(axe1_min, axe1_max, axe1_centre,
+                              axe2_min, axe2_max, axe2_centre):
+    """Calcule les positions (axe1, axe2) des percages d'un
+    assemblage Lamello, dans la zone de chevauchement donnee
+    (axe1_min..axe1_max, axe2_min..axe2_max, coordonnees plan de
+    la face, meme unite que le reste -- cm). Meme regle generale
+    que les autres assemblages Lamello du meuble : une paire a
+    chaque extremite de l'axe le plus long (9.5mm de marge,
+    101mm d'entraxe), plus une paire centrale supplementaire si
+    cet axe depasse 600mm. L'autre axe reste fixe a
+    'axe2_centre' (ou 'axe1_centre'). Se degrade gracieusement
+    si l'etendue est trop petite pour 2 paires separees : une
+    seule paire (entraxe reduit si necessaire), voire un seul
+    trou centre en dernier recours. Renvoie une liste de 1, 2,
+    4 ou 6 tuples (axe1, axe2)."""
+    etendue1 = axe1_max - axe1_min
+    etendue2 = axe2_max - axe2_min
+    if etendue1 >= etendue2:
+        axe_long_min, axe_long_max = axe1_min, axe1_max
+        etendue_longue = etendue1
+        fixe = axe2_centre
+        long_est_axe1 = True
+    else:
+        axe_long_min, axe_long_max = axe2_min, axe2_max
+        etendue_longue = etendue2
+        fixe = axe1_centre
+        long_est_axe1 = False
+    marge = LAMELLO_MARGE_ASSEMBLAGE_CM
+    decale = LAMELLO_DECALE_ASSEMBLAGE_CM
+    seuil_1_paire = mm_to_cm(120)
+    seuil_2_paires = mm_to_cm(240)
+    seuil_centre = mm_to_cm(600)
+    # L'entraxe (101mm) n'est JAMAIS reduit : en dessous de
+    # 120mm, pas de percage du tout (pas assez de place pour
+    # une seule paire avec sa marge) ; entre 120 et 240mm, une
+    # seule paire, sur le devant ; au-dela de 240mm, 2 paires
+    # (chaque extremite), plus une paire centrale si l'etendue
+    # depasse 600mm.
+    if etendue_longue < seuil_1_paire:
+        positions_longues = []
+    elif etendue_longue < seuil_2_paires:
+        positions_longues = [
+            axe_long_min + marge, axe_long_min + marge + decale]
+    else:
+        positions_longues = [
+            axe_long_min + marge, axe_long_min + marge + decale,
+            axe_long_max - marge - decale, axe_long_max - marge]
+        if etendue_longue > seuil_centre:
+            centre_zone = (axe_long_min + axe_long_max) / 2.0
+            positions_longues.append(centre_zone - decale / 2.0)
+            positions_longues.append(centre_zone + decale / 2.0)
+    if not positions_longues:
+        return []
+    if long_est_axe1:
+        return [(p, fixe) for p in positions_longues]
+    return [(fixe, p) for p in positions_longues]
+
+
+def _trouver_faces_contact(corps_cible, corps_solide, tolerance_cm=0.05,
+                            marge_bord_cm=1.0):
+    """Renvoie une liste de (face, point_contact, zone_min, zone_max) pour
+    les faces PLANES de 'corps_cible' EN CONTACT avec 'corps_solide'.
+    Mesure la distance minimale sur la FACE ENTIERE (pas seulement son
+    centroide : un petit solide -- equerre, raccord -- touche souvent
+    une face loin de son centre, un filtre au centroide le manquerait
+    completement). Le point de contact utilise pour positionner les
+    percages est le centre de la boite englobante du solide, PROJETE
+    sur le plan de la face puis RAMENE (clampe) dans la boite
+    englobante de la face si necessaire (le solide peut deborder de
+    l'etendue de la face). Pour ecarter les faux positifs d'arete
+    partagee avec une face voisine, verifie ensuite que ce point est a
+    au moins 'marge_bord_cm' de CHAQUE arete de la face. 'zone_min'/
+    'zone_max' (la boite englobante de l'intersection face/solide) sont
+    utilises pour repartir les percages selon la meme regle que les
+    autres assemblages du meuble (voir _paire_positions_lamello).
+    Echoue silencieusement par face en cas d'erreur de mesure isolee."""
     app = adsk.core.Application.get()
     mesure = app.measureManager
-    faces_contact = []
+    bb_solide = corps_solide.boundingBox
+    centre_solide = adsk.core.Point3D.create(
+        (bb_solide.minPoint.x + bb_solide.maxPoint.x) / 2.0,
+        (bb_solide.minPoint.y + bb_solide.maxPoint.y) / 2.0,
+        (bb_solide.minPoint.z + bb_solide.maxPoint.z) / 2.0)
+    resultats = []
     for face in corps_cible.faces:
         try:
             if face.geometry.objectType != adsk.core.Plane.classType():
                 continue
-            resultat = mesure.measureMinimumDistance(face.centroid, corps_solide)
-            if resultat and resultat.value <= tolerance_cm:
-                faces_contact.append(face)
+            resultat = mesure.measureMinimumDistance(face, corps_solide)
+            if not resultat or resultat.value > tolerance_cm:
+                continue
+            plan = face.geometry
+            v = centre_solide.vectorTo(plan.origin)
+            dist_normale = -v.dotProduct(plan.normal)
+            point_contact = centre_solide.copy()
+            deplacement = plan.normal.copy()
+            deplacement.scaleBy(-dist_normale)
+            point_contact.translateBy(deplacement)
+            fbb = face.boundingBox
+            point_contact = adsk.core.Point3D.create(
+                min(max(point_contact.x, fbb.minPoint.x), fbb.maxPoint.x),
+                min(max(point_contact.y, fbb.minPoint.y), fbb.maxPoint.y),
+                min(max(point_contact.z, fbb.minPoint.z), fbb.maxPoint.z))
+            trop_pres_bord = False
+            for arete in face.edges:
+                try:
+                    r_bord = mesure.measureMinimumDistance(point_contact, arete)
+                    if r_bord and r_bord.value < marge_bord_cm:
+                        trop_pres_bord = True
+                        break
+                except Exception:
+                    continue
+            if not trop_pres_bord:
+                sbb = corps_solide.boundingBox
+                zone_min = adsk.core.Point3D.create(
+                    max(fbb.minPoint.x, sbb.minPoint.x),
+                    max(fbb.minPoint.y, sbb.minPoint.y),
+                    max(fbb.minPoint.z, sbb.minPoint.z))
+                zone_max = adsk.core.Point3D.create(
+                    min(fbb.maxPoint.x, sbb.maxPoint.x),
+                    min(fbb.maxPoint.y, sbb.maxPoint.y),
+                    min(fbb.maxPoint.z, sbb.maxPoint.z))
+                resultats.append((face, point_contact, zone_min, zone_max))
         except Exception:
             continue
-    return faces_contact
+    return resultats
 
 
-def apply_solid_assembly(comp, tokens, design):
-    """Pour chaque token de 'tokens' (liste ; un token seul, str,
-    est aussi accepte) qui resout vers un corps solide existant,
-    detecte les faces PLANES des corps du meuble (present dans
-    'comp', y compris les composants imbriques directs -- portes)
-    qui sont EN CONTACT avec ce solide, et perce un trou Lamello
-    (assemblage) au centre de chaque face de contact, creusant
-    VERS L'INTERIEUR du panneau (sens oppose a la normale de la
-    face). Le solide externe lui-meme n'est jamais modifie (il
-    n'appartient pas au meuble). Echoue silencieusement par
-    solide/par face (corps supprime depuis, geometrie non plane,
-    etc.) sans interrompre la reconstruction du reste du meuble."""
-    if not tokens:
+def apply_solid_assembly(comp, tokens, noms_solides_meuble, design):
+    """Pour chaque token de 'tokens' (liste ; un token seul, str, est
+    aussi accepte) qui resout vers un corps solide existant, detecte
+    automatiquement les faces PLANES des corps du meuble (present dans
+    'comp', y compris les composants imbriques directs -- portes) qui
+    sont EN CONTACT avec ce solide, et perce un assemblage Lamello
+    (meme regle generale que les autres assemblages du meuble :
+    paire(s) 9.5mm/101mm selon la taille de la zone de contact -- voir
+    _paire_positions_lamello) sur chaque face de contact, creusant VERS
+    L'INTERIEUR du panneau. Le sens de percage est determine par la
+    position du CENTRE DU CORPS CIBLE (plus robuste que la normale de
+    la face, qui peut mal se comporter apres transformation). Le
+    solide externe lui-meme n'est jamais modifie (il n'appartient pas
+    au meuble).
+
+    'noms_solides_meuble' (optionnel, liste de str) : en plus
+    des solides externes de 'tokens', utilise aussi les corps
+    DU MEUBLE LUI-MEME portant ces noms comme reference pour la
+    detection de contact (contourne la non-selectionnabilite
+    3D des corps du meuble pendant que ce dialogue est ouvert).
+
+    Echoue silencieusement par solide/par face (corps supprime
+    depuis, geometrie non plane, etc.) sans interrompre la
+    reconstruction du reste du meuble."""
+    if not tokens and not noms_solides_meuble:
         return
-    if isinstance(tokens, str):
+    if not tokens:
+        tokens = []
+    elif isinstance(tokens, str):
         tokens = [tokens]
-    # measureMinimumDistance exige des corps QUALIFIES PAR
-    # OCCURRENCE (verifie empiriquement -- un BRepBody obtenu
-    # directement via comp.bRepBodies leve 'invalid argument
-    # geometryOne', meme entre 2 corps du meme composant), pas
-    # les corps bruts d'un composant. On recupere donc
-    # l'occurrence de 'comp' pour qualifier ses propres corps.
+    if not noms_solides_meuble:
+        noms_solides_meuble = []
+    elif isinstance(noms_solides_meuble, str):
+        noms_solides_meuble = [noms_solides_meuble]
+    # measureMinimumDistance exige des corps QUALIFIES PAR OCCURRENCE
+    # (verifie empiriquement -- un BRepBody obtenu directement via
+    # comp.bRepBodies leve 'invalid argument geometryOne', meme entre
+    # 2 corps du meme composant), pas les corps bruts d'un composant.
+    # On recupere donc l'occurrence de 'comp' pour qualifier ses
+    # propres corps.
     cibles = []
     try:
         occs_comp = design.rootComponent.allOccurrencesByComponent(comp)
@@ -888,20 +1012,37 @@ def apply_solid_assembly(comp, tokens, design):
         pass
     for occ in comp.occurrences:
         try:
-            cibles.extend(
-                b for b in occ.bRepBodies if b.isValid)
+            cibles.extend(b for b in occ.bRepBodies if b.isValid)
         except Exception:
             continue
+    # Si des panneaux du meuble sont coches dans le menu
+    # deroulant (noms_solides_meuble), SEULS ces panneaux
+    # peuvent recevoir un percage : tout panneau non coche est
+    # exclu de la liste des cibles, meme s'il est par ailleurs
+    # en contact avec un solide de 'tokens'. Sans aucun
+    # panneau coche, tous les panneaux du meuble restent
+    # eligibles (comportement precedent, retrocompatible avec
+    # 'Assembler des solides' utilise seul).
+    # Le filtre ne s'applique que sur les noms qui correspondent
+    # reellement a un panneau DU MEUBLE (les noms de corps A LA
+    # RACINE dans 'noms_solides_meuble' servent uniquement de
+    # reference, pas de filtre -- sinon cocher UNIQUEMENT un
+    # corps racine exclurait a tort tous les panneaux du
+    # meuble).
+    _noms_panneaux_meuble = {c.name for c in cibles} & set(noms_solides_meuble)
+    if _noms_panneaux_meuble:
+        cibles = [c for c in cibles if c.name in _noms_panneaux_meuble]
+    corps_solides_a_traiter = []
     for token in tokens:
         try:
             entites = design.findEntityByToken(token)
             if not entites:
                 continue
             corps_solide = entites[0]
-            # Comme pour 'cibles' : measureMinimumDistance exige
-            # un corps QUALIFIE PAR OCCURRENCE. Si le token n'en a
-            # pas fourni un (assemblyContext absent), on tente de
-            # le requalifier via l'occurrence de son composant.
+            # Comme pour 'cibles' : measureMinimumDistance exige un
+            # corps QUALIFIE PAR OCCURRENCE. Si le token n'en a pas
+            # fourni un (assemblyContext absent), on tente de le
+            # requalifier via l'occurrence de son composant.
             if not getattr(corps_solide, 'assemblyContext', None):
                 try:
                     occs_solide = design.rootComponent.allOccurrencesByComponent(
@@ -911,8 +1052,55 @@ def apply_solid_assembly(comp, tokens, design):
                         corps_solide = occ_solide.bRepBodies.itemByName(corps_solide.name)
                 except Exception:
                     pass
+            corps_solides_a_traiter.append(corps_solide)
         except Exception:
             continue
+    # Les panneaux DU MEUBLE LUI-MEME choisis par nom (deja
+    # qualifies par occurrence, presents dans 'cibles') sont
+    # ajoutes tels quels comme references supplementaires.
+    cibles_meuble_seul = list(cibles)
+    corps_racine_cibles = []
+    for nom_solide_meuble in noms_solides_meuble:
+        trouve = False
+        for cible_candidate in cibles:
+            if cible_candidate.name == nom_solide_meuble:
+                corps_solides_a_traiter.append(cible_candidate)
+                trouve = True
+                break
+        if trouve:
+            continue
+        # Non trouve parmi les corps du meuble : cherche aussi
+        # parmi les corps A LA RACINE du document (murs, tuyaux,
+        # etc. choisis par nom depuis le menu deroulant, en plus
+        # des panneaux du meuble).
+        try:
+            for corps_racine in design.rootComponent.bRepBodies:
+                if corps_racine.name == nom_solide_meuble:
+                    corps_solides_a_traiter.append(corps_racine)
+                    # Un corps racine choisi par nom doit aussi
+                    # pouvoir RECEVOIR un percage (pas seulement
+                    # servir de reference). La boucle
+                    # principale est a sens unique (reference
+                    # -> cibles), donc on le note a part pour
+                    # une verification bidirectionnelle dediee
+                    # apres la boucle principale.
+                    if corps_racine not in cibles:
+                        cibles.append(corps_racine)
+                    corps_racine_cibles.append(corps_racine)
+                    break
+        except Exception:
+            continue
+    if corps_racine_cibles:
+        # Un corps racine choisi comme cible doit pouvoir etre
+        # perce par les panneaux du meuble aussi (pas seulement
+        # l'inverse) : la boucle principale etant a sens unique
+        # (reference -> cibles), on ajoute les panneaux du
+        # meuble comme references supplementaires pour cette
+        # verification bidirectionnelle.
+        for c in cibles_meuble_seul:
+            if c not in corps_solides_a_traiter:
+                corps_solides_a_traiter.append(c)
+    for corps_solide in corps_solides_a_traiter:
         for cible in cibles:
             try:
                 if cible == corps_solide:
@@ -920,33 +1108,68 @@ def apply_solid_assembly(comp, tokens, design):
                 faces_contact = _trouver_faces_contact(cible, corps_solide)
             except Exception:
                 continue
-            for idx_face, face in enumerate(faces_contact):
+            for idx_face, (face, centre, zone_min, zone_max) in enumerate(faces_contact):
                 try:
                     plan = face.geometry
                     normale = plan.normal
-                    centre = face.centroid
                     comp_cible = cible.parentComponent
+                    cbb = cible.boundingBox
+                    centre_corps = adsk.core.Point3D.create(
+                        (cbb.minPoint.x + cbb.maxPoint.x) / 2.0,
+                        (cbb.minPoint.y + cbb.maxPoint.y) / 2.0,
+                        (cbb.minPoint.z + cbb.maxPoint.z) / 2.0)
+                    # 'centre'/'normale'/'zone_min'/'zone_max'/'centre_corps'
+                    # sont en coordonnees MONDE (issues de 'cible',
+                    # qualifie par occurrence) ; drill_hole_x/y/z
+                    # attendent des coordonnees LOCALES au composant.
+                    # On les retransforme via l'inverse du transform de
+                    # l'occurrence avant de percer.
+                    _occ_cible = getattr(cible, 'assemblyContext', None)
+                    if _occ_cible:
+                        _inv = _occ_cible.transform.copy()
+                        if _inv.invert():
+                            centre = centre.copy()
+                            centre.transformBy(_inv)
+                            normale = normale.copy()
+                            normale.transformBy(_inv)
+                            zone_min = zone_min.copy()
+                            zone_min.transformBy(_inv)
+                            zone_max = zone_max.copy()
+                            zone_max.transformBy(_inv)
+                            centre_corps = centre_corps.copy()
+                            centre_corps.transformBy(_inv)
                     nom = 'Assemblage Lamello {} {} {:02d}'.format(
                         cible.name, corps_solide.name, idx_face + 1)
                     ax, ay, az = abs(normale.x), abs(normale.y), abs(normale.z)
                     if ax >= ay and ax >= az:
-                        sign = -1 if normale.x > 0 else 1
-                        drill_hole_x(
-                            comp_cible, centre.x, sign, centre.y, centre.z,
-                            LAMELLO_DIAM_ASSEMBLAGE_CM, LAMELLO_DEPTH_ASSEMBLAGE_CM, nom)
+                        sign = 1 if centre_corps.x > centre.x else -1
+                        for k, (py, pz) in enumerate(_paire_positions_lamello(
+                                zone_min.y, zone_max.y, centre.y,
+                                zone_min.z, zone_max.z, centre.z)):
+                            drill_hole_x(
+                                comp_cible, centre.x, sign, py, pz,
+                                LAMELLO_DIAM_ASSEMBLAGE_CM, LAMELLO_DEPTH_ASSEMBLAGE_CM,
+                                nom + ' {}'.format(k + 1))
                     elif ay >= ax and ay >= az:
-                        sign = -1 if normale.y > 0 else 1
-                        drill_hole_y(
-                            comp_cible, centre.y, sign, centre.x, centre.z,
-                            LAMELLO_DIAM_ASSEMBLAGE_CM, LAMELLO_DEPTH_ASSEMBLAGE_CM, nom)
+                        sign = 1 if centre_corps.y > centre.y else -1
+                        for k, (px, pz) in enumerate(_paire_positions_lamello(
+                                zone_min.x, zone_max.x, centre.x,
+                                zone_min.z, zone_max.z, centre.z)):
+                            drill_hole_y(
+                                comp_cible, centre.y, sign, px, pz,
+                                LAMELLO_DIAM_ASSEMBLAGE_CM, LAMELLO_DEPTH_ASSEMBLAGE_CM,
+                                nom + ' {}'.format(k + 1))
                     else:
-                        sign = -1 if normale.z > 0 else 1
-                        drill_hole_z(
-                            comp_cible, centre.z, sign, centre.x, centre.y,
-                            LAMELLO_DIAM_ASSEMBLAGE_CM, LAMELLO_DEPTH_ASSEMBLAGE_CM, nom)
+                        sign = 1 if centre_corps.z > centre.z else -1
+                        for k, (px, py) in enumerate(_paire_positions_lamello(
+                                zone_min.x, zone_max.x, centre.x,
+                                zone_min.y, zone_max.y, centre.y)):
+                            drill_hole_z(
+                                comp_cible, centre.z, sign, px, py,
+                                LAMELLO_DIAM_ASSEMBLAGE_CM, LAMELLO_DEPTH_ASSEMBLAGE_CM,
+                                nom + ' {}'.format(k + 1))
                 except Exception:
                     continue
-
 
 def build_meuble_body(comp, values, thickness_params=None, progress=None):
     """Construit dans le composant (vide) 'comp' tous les panneaux du

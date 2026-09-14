@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '2.12'
+ADDIN_VERSION = '2.33'
 
 
 app = None
@@ -295,7 +295,8 @@ def generate_meuble(root, design, values, meuble_comp, meuble_transform, progres
     # soustraction (les faces de contact potentiellement modifiees
     # par une decoupe doivent etre a jour avant detection).
     apply_solid_assembly(
-        meuble_comp, values.get('solides_assembles_tokens'), design)
+        meuble_comp, values.get('solides_assembles_tokens'),
+        values.get('panneaux_assembles_meuble'), design)
 
     try:
         meuble_comp.attributes.add(ATTR_GROUP, ATTR_PARAMS, json.dumps(values))
@@ -537,6 +538,15 @@ def apply_meuble_selection(inputs, override_values=None):
             inputs=inputs)
     update_field_visibility(inputs)
     update_petite_diagonale(inputs)
+    update_liste_panneaux_exclusion(inputs)
+    dropdown_exclus_a = inputs.itemById('selectPanneauxAssemblerMeuble')
+    if dropdown_exclus_a:
+        _noms_exclus_a = set(values.get('panneaux_assembles_meuble') or [])
+        for _item_a in dropdown_exclus_a.listItems:
+            try:
+                _item_a.isSelected = _item_a.name in _noms_exclus_a
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -1853,6 +1863,7 @@ def refresh_computed_fields(inputs):
             existing_portes_pm, existing_tiroirs_pm,
             existing_pm_portes, existing_pm_tiroirs, inputs=inputs)
     update_field_visibility(inputs)
+    update_liste_panneaux_exclusion(inputs)
 
     # Bouton ponctuel : on le décoche aussitôt après usage pour permettre de
     # le recliquer (même comportement que les autres boutons de ce type).
@@ -2056,6 +2067,77 @@ def update_petite_diagonale(inputs):
         '{:.1f} mm</div>'.format(plafond_max_mm))
 
 
+def _rafraichir_dropdown_panneaux(dropdown, noms_actuels):
+    """Rafraichit un menu deroulant a cases a cocher pour qu'il
+    contienne exactement 'noms_actuels', en preservant les cases
+    deja cochees dont le nom existe encore."""
+    try:
+        deja_coches = set()
+        for item in dropdown.listItems:
+            if item.isSelected:
+                deja_coches.add(item.name)
+        dropdown.listItems.clear()
+    except Exception:
+        return
+    # Chaque ajout est protege individuellement : un nom
+    # problematique (type inattendu, doublon, etc.) ne doit
+    # pas empecher l'ajout des suivants.
+    for nom in noms_actuels:
+        try:
+            dropdown.listItems.add(nom, nom in deja_coches)
+        except Exception:
+            continue
+
+
+def update_liste_panneaux_exclusion(inputs):
+    """Recalcule la liste des noms de panneaux du meuble (via
+    compute_layout sur les valeurs actuellement affichees dans le
+    dialogue) et rafraichit le menu deroulant a cases a cocher
+    'selectPanneauxAssemblerMeuble' en consequence -- les
+    panneaux dynamiques (montants, etageres) changent de
+    nombre/noms selon les parametres. Preserve les cases deja
+    cochees dont le nom existe encore apres rafraichissement.
+    Echoue silencieusement si le champ n'existe pas encore ou
+    si le calcul de layout echoue (parametres
+    incomplets/invalides en cours de saisie)."""
+    dropdown_assemble = inputs.itemById('selectPanneauxAssemblerMeuble')
+    if not dropdown_assemble:
+        return
+    try:
+        values = collect_values_mm(inputs)
+        layout = compute_layout(values)
+        noms_actuels = []
+        for panel in layout.get('panels', []):
+            # 2 formats de tuple panel coexistent dans
+            # compute_layout : standard (8 elements, nom a
+            # l'index 6) et 'XZ' (9 elements, tag 'XZ' en
+            # position 0, nom decale a l'index 7 -- ex.
+            # Plinthe, faces de tiroir). Sans cette
+            # distinction, le nom lu pour un panneau XZ est en
+            # fait une dimension numerique (ex. 1.9), qui fait
+            # planter dropdown.listItems.add() et interrompt le
+            # reste du rafraichissement (constate : liste
+            # toujours tronquee juste apres 'Fond').
+            nom = panel[7] if panel and panel[0] == 'XZ' else panel[6]
+            if isinstance(nom, str) and nom and nom not in noms_actuels:
+                noms_actuels.append(nom)
+    except Exception:
+        return
+    # Ajoute aussi les corps solides presents A LA RACINE du
+    # document (murs, tuyaux, etc. places directement dans le
+    # composant racine, hors du meuble) : meme contournement de
+    # non-selectionnabilite 3D que pour les panneaux du meuble,
+    # utile pour les choisir par nom au lieu du clic 3D.
+    try:
+        _design_racine = adsk.core.Application.get().activeProduct
+        for _corps_racine in _design_racine.rootComponent.bRepBodies:
+            if _corps_racine.name and _corps_racine.name not in noms_actuels:
+                noms_actuels.append(_corps_racine.name)
+    except Exception:
+        pass
+    _rafraichir_dropdown_panneaux(dropdown_assemble, noms_actuels)
+
+
 def add_meuble_fields(inputs, cur_mm_func):
     """Construit la boîte de dialogue en 4 volets (onglets) : Caisson (avec
     deux sous-volets rabattables Dimensions et Étagères), Portes, Tiroirs et
@@ -2162,10 +2244,13 @@ def add_meuble_fields(inputs, cur_mm_func):
                 pass
 
     sel_solide_assemble = group_decoupe.children.addSelectionInput(
-        'selectSolideAssembler', 'Assembler des solides',
-        'Sélectionner un ou plusieurs corps solides existants à assembler avec le meuble.\n'
-        'Un assemblage par perçages Lamello est cree sur les faces en contact, '
-        'reappliqué automatiquement a chaque reconstruction.')
+        'selectSolideAssembler', 'Assembler par Lamello',
+        'Selectionner un ou plusieurs corps solides existants (mur, '
+        'tuyau, etc.) a assembler avec le meuble. Les faces du meuble '
+        'en contact sont detectees automatiquement et un assemblage '
+        'Lamello (9.5mm de marge, 101mm entraxe, meme regle que les '
+        'autres assemblages) y est perce.\n'
+        'Reapplique automatiquement a chaque reconstruction.')
     sel_solide_assemble.addSelectionFilter('SolidBodies')
     sel_solide_assemble.setSelectionLimits(0, 0)
     _tokens_solides_assemble_actuels = cur_mm_func('solides_assembles_tokens', None) or []
@@ -2179,7 +2264,24 @@ def add_meuble_fields(inputs, cur_mm_func):
             except Exception:
                 pass
 
-    # --- Volet Montant intermédiaire (deplace hors de Caisson) ----------
+    dropdown_panneaux_exclure = group_decoupe.children.addDropDownCommandInput(
+        'selectPanneauxAssemblerMeuble', 'Appliquer perçage Lamello',
+        adsk.core.DropDownStyles.CheckBoxDropDownStyle)
+    dropdown_panneaux_exclure.tooltip = (
+        'Choisir par nom des panneaux DU MEUBLE LUI-MEME a '
+        'utiliser comme reference pour la detection de contact, '
+        'comme Assembler des solides mais pour un panneau du '
+        'meuble (non selectionnable en 3D pendant que ce '
+        'dialogue est ouvert).')
+    _noms_exclus_actuels = cur_mm_func('panneaux_assembles_meuble', None) or []
+    for _nom_p in _noms_exclus_actuels:
+        try:
+            dropdown_panneaux_exclure.listItems.add(_nom_p, True)
+        except Exception:
+            pass
+
+    
+# --- Volet Montant intermédiaire (deplace hors de Caisson) ----------
     tab_montants = inputs.addTabCommandInput('tabMontants', 'Montant intermédiaire')
     tm = tab_montants.children
     mode_montants_actuel = cur_mm_func('montants_mode', 'axe_egal')
@@ -2434,6 +2536,7 @@ def add_meuble_fields(inputs, cur_mm_func):
     # Reverifie ici (pas seulement au demarrage de Fusion) pour que
     # l'ouverture du dialogue detecte une eventuelle publication faite
     # PENDANT que Fusion tournait deja.
+    update_liste_panneaux_exclusion(inputs)
     try:
         _check_and_apply_updates()
     except Exception:
@@ -2835,6 +2938,13 @@ def collect_values_mm(inputs):
             except Exception:
                 continue
     values['solides_assembles_tokens'] = _tokens_assemble_c
+    dropdown_exclus_c = inputs.itemById('selectPanneauxAssemblerMeuble')
+    _noms_exclus_c = []
+    if dropdown_exclus_c:
+        for _item in dropdown_exclus_c.listItems:
+            if _item.isSelected:
+                _noms_exclus_c.append(_item.name)
+    values['panneaux_assembles_meuble'] = _noms_exclus_c
     chk_onglet = inputs.itemById('checkCoupeOnglet')
     values['coupe_onglet'] = chk_onglet.value if chk_onglet else False
 
