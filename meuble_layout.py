@@ -154,6 +154,7 @@ def normalize_percage32_colonne(entry, legacy_actif=True, legacy_64=False,
             'masquer_bas': max(0, int(entry.get('masquer_bas', 0) or 0)),
             'masquer_haut': max(0, int(entry.get('masquer_haut', 0) or 0)),
             'trous_par_etagere': trous_par_etagere,
+            'percage_fond': max(0, int(entry.get('percage_fond', 0) or 0)),
         }
     # Ancien format : bool (colonne active/inactive au sein d'un système 32/64
     # unique et global) ; le masquage était lui aussi un réglage global.
@@ -907,12 +908,59 @@ def compute_layout(values):
     _socle_actif_effectif = (
         values.get('socle_actif', True) and not values.get('coupe_onglet', False))
     Soc = mm_to_cm(values.get('socle', 0)) if _socle_actif_effectif else 0.0
+    # 'Plinthe' peut etre activee INDEPENDAMMENT du Socle complet
+    # (case Plinthe seule, sans le Socle) : dans ce cas, le
+    # panneau Plinthe existe (meme hauteur que Soc aurait) mais
+    # AUCUNE autre consequence du socle (recul des Cotes,
+    # hauteur du caisson, etc.) n'est appliquee -- Soc lui-meme
+    # reste a 0 si le Socle complet n'est pas actif. Soc_plinthe
+    # sert uniquement a dimensionner/positionner le panneau
+    # Plinthe.
+    _plinthe_actif_effectif = (
+        values.get('plinthe_actif', False) and not values.get('coupe_onglet', False))
+    # Hauteur : celle du Socle si actif (comportement historique,
+    # champ partage) ; sinon celle DEDIEE a la Plinthe seule
+    # ('hauteur_plinthe', Socle et Plinthe etant mutuellement
+    # exclusifs cote UI).
+    if _socle_actif_effectif:
+        Soc_plinthe = mm_to_cm(values.get('socle', 0))
+    elif _plinthe_actif_effectif:
+        Soc_plinthe = mm_to_cm(values.get('hauteur_plinthe', 0))
+    else:
+        Soc_plinthe = 0.0
     # La hauteur de socle ne doit pas augmenter la hauteur totale du meuble :
     # le socle mord sur la hauteur demandée (H) plutôt que de s'y ajouter. En
     # réduisant H ici, tout ce qui suit (caisson, portes, perçages Lamello...)
     # utilise directement la hauteur de caisson réduite ; les côtés, plus bas,
     # redeviennent bien de hauteur H_originale = H_ici + Soc, socle compris.
     H = H - Soc
+
+    # La Profondeur saisie doit toujours representer la
+    # dimension HORS TOUT du meuble (caisson + porte/tiroir en
+    # applique inclus), quelle que soit la configuration. Une
+    # porte ou un tiroir en mode 'applique' est monte DEVANT
+    # le caisson et ajoute donc sa propre epaisseur par-dessus
+    # : pour que le total (caisson + facade) corresponde
+    # exactement a P, on reduit la profondeur du CAISSON
+    # lui-meme de l'epaisseur de la plus grande facade en
+    # applique presente (porte ou tiroir). Sans aucune facade
+    # en applique, P n'est pas modifie (deja hors tout).
+    _portes_mode_ht = values.get('portes_mode', 'applique')
+    _a_porte_applique_ht = _portes_mode_ht == 'applique' and any(
+        (c or {}).get('choix', 'off') != 'off'
+        for c in (values.get('portes_colonnes') or []))
+    _tiroirs_mode_ht = values.get('tiroirs_mode', 'applique')
+    _a_tiroir_applique_ht = _tiroirs_mode_ht == 'applique' and any(
+        (c or {}).get('nb_tiroirs', 0) > 0
+        for c in (values.get('tiroirs_colonnes') or []))
+    _ep_facade_applique = 0.0
+    if _a_porte_applique_ht:
+        _ep_facade_applique = max(
+            _ep_facade_applique, mm_to_cm(values.get('ep_porte', 0)))
+    if _a_tiroir_applique_ht:
+        _ep_facade_applique = max(
+            _ep_facade_applique, mm_to_cm(values.get('ep_face_tiroir', 0)))
+    P = P - _ep_facade_applique
 
     interior_depth = P - Ef       # profondeur utile (devant le fond)
     if interior_depth <= 0:
@@ -930,14 +978,16 @@ def compute_layout(values):
     # elements interieurs (montants intermediaires, etageres,
     # Dessus/Dessous en mode standard) doivent s'arreter pour
     # rester alignes avec le fond, quel que soit son mode de
-    # pose. En 'applique', c'est la meme valeur qu'interior_depth
-    # (comportement inchange). En 'encastre', le fond recule
-    # d'une epaisseur de fond (Ef) supplementaire en plus du
-    # 'retrait_fond' optionnel, car il est logee plus avant dans
-    # sa feuillure.
+    # pose. En 'applique' COMME en 'encastre' SANS retrait, le
+    # fond est a la MEME position (interior_depth) -- seule la
+    # difference est qu'en encastre il est loge dans une
+    # feuillure du cote (qui s'etend lui-meme jusqu'a P) au
+    # lieu de deborder derriere le cote comme en applique. Le
+    # 'retrait_fond' optionnel permet de reculer davantage le
+    # fond dans sa feuillure si souhaite.
     retrait_fond = mm_to_cm(values.get('retrait_fond', 0))
     interior_depth_int = (
-        interior_depth - 2 * Ef - retrait_fond
+        interior_depth - retrait_fond
         if values.get('pose_fond') == 'encastre' else interior_depth)
     interior_z0 = Ep              # dessus du panneau du bas
     interior_z1 = H - Ep          # dessous du panneau du haut
@@ -956,8 +1006,21 @@ def compute_layout(values):
     # Les côtés (montants extérieurs) descendent de Soc sous le niveau z=0 du
     # caisson ; le dessous/dessus/fond restent inchangés.
     coupe_onglet = bool(values.get('coupe_onglet', False))
-    panels.append((0, Ep, 0, interior_depth, -Soc, H + Soc, 'Côté gauche', None))
-    panels.append((L - Ep, L, 0, interior_depth, -Soc, H + Soc, 'Côté droit', None))
+    # Profondeur des Cotes (montants exterieurs) : normalement
+    # interior_depth (P - Ef), le Fond 'en applique' venant
+    # s'ajouter derriere pour atteindre P au total (hors tout
+    # deja correct dans ce mode). En Fond 'encastre', le Fond
+    # est au contraire RECULE dans sa feuillure -- il ne
+    # deborde JAMAIS a l'arriere des Cotes dans ce mode, donc
+    # rien n'atteint P sans intervention : les Cotes doivent
+    # alors s'etendre eux-memes jusqu'a P pour que la
+    # profondeur hors tout corresponde a la valeur saisie
+    # (la feuillure du fond, positionnee via interior_depth_int,
+    # reste inchangee -- seule la matiere derriere elle
+    # s'allonge).
+    profondeur_cote = P if values.get('pose_fond') == 'encastre' else interior_depth
+    panels.append((0, Ep, 0, profondeur_cote, -Soc, H + Soc, 'Côté gauche', None))
+    panels.append((L - Ep, L, 0, profondeur_cote, -Soc, H + Soc, 'Côté droit', None))
     _dessous_x0, _dessous_x1 = (0, L) if coupe_onglet else (Ep, L - Ep)
     _dessus_x0, _dessus_x1 = (0, L) if coupe_onglet else (Ep, L - Ep)
     # Fond encastre : en mode Standard (pas coupe d'onglet),
@@ -1060,7 +1123,15 @@ def compute_layout(values):
             # interior_depth : dessus/dessous : leur propre Y1,
             # deja calcule plus haut), quel que soit le mode
             # standard/onglet.
-            _y1_rainure_cote = interior_depth if _feuillure_fond else interior_depth_int + Ef
+            # La feuillure (contrairement a la rainure fermee)
+            # s'ouvre jusqu'a l'ARRIERE REEL du Cote -- P en mode
+            # encastre (les Cotes s'etendent jusqu'a la
+            # profondeur totale dans ce mode, voir plus haut),
+            # pas interior_depth qui n'est plus une reference
+            # valide ici (peut desormais etre egal a
+            # interior_depth_int quand retrait_fond=0, ce qui
+            # donnerait une feuillure de largeur nulle).
+            _y1_rainure_cote = P if _feuillure_fond else interior_depth_int + Ef
             # Borne a la profondeur REELLE de Dessus/Dessous
             # (_y1_dessus_dessous) : en mode Standard, ils
             # s'arretent net a la face interieure du fond (voir
@@ -1099,8 +1170,14 @@ def compute_layout(values):
     # montants droite/gauche, en épaisseur panneaux, reculé de la face avant
     # du Dessous (y=0) par le retrait de plinthe. N'existe que s'il y a un
     # socle (sinon il n'y a pas d'espace sous le caisson pour la loger).
-    if Soc > 1e-6:
-        retrait_plinthe = mm_to_cm(values.get('retrait_plinthe', 5))
+    if Soc_plinthe > 1e-6:
+        # Retrait : celui du Socle si actif (champ partage,
+        # comportement historique), sinon celui DEDIE a la
+        # Plinthe seule.
+        if _socle_actif_effectif:
+            retrait_plinthe = mm_to_cm(values.get('retrait_plinthe', 5))
+        else:
+            retrait_plinthe = mm_to_cm(values.get('retrait_plinthe_seule', 5))
         # 'Encastre' (par defaut) : la plinthe se loge ENTRE les
         # montants/cotes (largeur interieure, comme un panneau XZ
         # classique), reculee de sa face AVANT par 'retrait_plinthe'
@@ -1113,7 +1190,11 @@ def compute_layout(values):
         if values.get('pose_plinthe') == 'applique':
             _plinthe_x0, _plinthe_x1 = 0, L
             _plinthe_y0 = retrait_plinthe - Ep
-            if retrait_plinthe > 1e-6:
+            # L'encoche dans les Cotes n'a de sens que si le
+            # Socle COMPLET est actif (sinon les Cotes n'ont
+            # pas de matiere dans cette zone Z a decouper --
+            # cas 'Plinthe seule' sans Socle).
+            if retrait_plinthe > 1e-6 and Soc > 1e-6:
                 # La face arriere de la plinthe (Y=retrait_plinthe)
                 # empiete alors dans la matiere des montants (qui
                 # commencent a Y=0) sur la zone du socle : on
@@ -1135,7 +1216,7 @@ def compute_layout(values):
         else:
             _plinthe_x0, _plinthe_x1 = Ep, L - Ep
             _plinthe_y0 = retrait_plinthe
-        panels.append(('XZ', _plinthe_x0, _plinthe_x1, -Soc, 0, _plinthe_y0, Ep,
+        panels.append(('XZ', _plinthe_x0, _plinthe_x1, -Soc_plinthe, 0, _plinthe_y0, Ep,
                        'Plinthe', 'EpPanneau'))
 
     # --- Montants intermédiaires (renforts verticaux entre dessus et dessous,
@@ -1288,9 +1369,36 @@ def compute_layout(values):
         grilles_p32_par_colonne.append(_grille_col)
         _cand_par_niche = []
         for (_nz0, _nz1), _niche in zip(_nbounds, _p32_niches):
-            _cand_par_niche.append(_candidats_percage32_niche(
+            _cand_niche = _candidats_percage32_niche(
                 _grille_col, _niche['systeme'], _niche['masquer_bas'], _niche['masquer_haut'],
-                _nz0, _nz1))
+                _nz0, _nz1)
+            _cand_par_niche.append(_cand_niche)
+            # Percage systeme 32 sur le FOND : memes Z que la
+            # grille de cette niche (candidats deja filtres
+            # systeme/masquage), repartis sur N lignes en X dans
+            # la largeur de la colonne. 0 = aucun percage, 1 =
+            # une ligne centree, 2+ = lignes a egale distance
+            # des bords (repartition uniforme sur la largeur).
+            _nb_lignes_fond = int(_niche.get('percage_fond', 0) or 0)
+            if _nb_lignes_fond > 0 and _cand_niche:
+                _bay_x0, _bay_x1 = segments[_bay_i]
+                _largeur_bay = _bay_x1 - _bay_x0
+                if _nb_lignes_fond == 1:
+                    _xs_fond = [(_bay_x0 + _bay_x1) / 2.0]
+                else:
+                    _pas_fond = _largeur_bay / (_nb_lignes_fond + 1)
+                    _xs_fond = [
+                        _bay_x0 + _pas_fond * (_k + 1)
+                        for _k in range(_nb_lignes_fond)]
+                _diam_p32_fond = mm_to_cm(PERCAGE32_DIAM_MM)
+                _depth_p32_fond = min(mm_to_cm(PERCAGE32_DEPTH_MM), Ef)
+                for _xi, _x_fond in enumerate(_xs_fond):
+                    for _z_fond in _cand_niche:
+                        holes.append((
+                            'Y', interior_depth_int, 1, _x_fond, _z_fond,
+                            _diam_p32_fond, _depth_p32_fond,
+                            'Percage fond Colonne {:02d} Ligne {:02d}'.format(
+                                _bay_i + 1, _xi + 1)))
         p32_niches_candidates.append(_cand_par_niche)
         p32_colonnes_candidates.append([z for _nc in _cand_par_niche for z in _nc])
 

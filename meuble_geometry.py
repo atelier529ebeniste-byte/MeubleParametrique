@@ -594,6 +594,14 @@ def drill_holes_batch(comp, axis, plane, sign, diam, depth, centers, name):
         for u_center, v_center in centers:
             sketch.sketchCurves.sketchCircles.addByCenterRadius(
                 adsk.core.Point3D.create(-v_center, u_center, 0), r)
+    elif axis == 'Y':
+        # Meme convention que drill_hole_y : (x_center, -z_center, 0)
+        # sur le plan XZ.
+        sketch = comp.sketches.add(comp.xZConstructionPlane)
+        sketch.name = name
+        for u_center, v_center in centers:
+            sketch.sketchCurves.sketchCircles.addByCenterRadius(
+                adsk.core.Point3D.create(u_center, -v_center, 0), r)
     else:
         sketch = comp.sketches.add(comp.xYConstructionPlane)
         sketch.name = name

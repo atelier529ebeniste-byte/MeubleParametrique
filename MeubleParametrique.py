@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '2.33'
+ADDIN_VERSION = '2.45'
 
 
 app = None
@@ -358,6 +358,8 @@ def apply_meuble_selection(inputs, override_values=None):
             ci.value = mm_to_cm(values[key])
     for field_id, key in (
             ('champSocle', 'socle'),
+            ('champHauteurPlintheSeule', 'hauteur_plinthe'),
+            ('champRetraitPlintheSeule', 'retrait_plinthe_seule'),
             ('champRetraitFond', 'retrait_fond'),
             ('champRetraitEtagere', 'retrait_etagere'),
             ('champRetraitMontant', 'retrait_montant'),
@@ -380,9 +382,16 @@ def apply_meuble_selection(inputs, override_values=None):
         ci = inputs.itemById(field_id)
         if ci and key in values:
             ci.value = mm_to_cm(values[key])
-    chk_socle = inputs.itemById('checkSocleActif')
-    if chk_socle and 'socle_actif' in values:
-        chk_socle.value = bool(values['socle_actif'])
+    dd_socle_plinthe_a = inputs.itemById('dropdownSoclePlinthe')
+    if dd_socle_plinthe_a:
+        if values.get('socle_actif'):
+            _mode_sp_a = 'Socle'
+        elif values.get('plinthe_actif'):
+            _mode_sp_a = 'Plinthe'
+        else:
+            _mode_sp_a = 'Aucun'
+        for _item_sp in dd_socle_plinthe_a.listItems:
+            _item_sp.isSelected = (_item_sp.name == _mode_sp_a)
     dd_pose_socle = inputs.itemById('dropdownPoseSocle')
     if dd_pose_socle:
         _pose_label = ('En applique' if values.get('pose_plinthe') == 'applique'
@@ -676,19 +685,19 @@ def rebuild_percage32_tables(children, count, existing_colonnes=None, inputs=Non
                     else {'systeme': '32', 'masquer_bas': 0, 'masquer_haut': 0})
 
         header = children.addTableCommandInput(
-            'tableP32Col{:02d}Header'.format(i), '', 5, '2:2:2:2:2')
+            'tableP32Col{:02d}Header'.format(i), '', 6, '2:2:2:2:2:2')
         header.hasGrid = False
         header.minimumVisibleRows = 1
         for col_idx, texte in enumerate((
                 'Colonne {:02d}'.format(i), 'Perçage', 'Masquer haut', 'Masquer bas',
-                'Trous par étagère')):
+                'Trous par étagère', 'Perçage fond')):
             cell = header.commandInputs.addStringValueInput(
                 'tableP32Col{:02d}HeaderCell{}'.format(i, col_idx), '', texte)
             cell.isReadOnly = True
             header.addCommandInput(cell, 0, col_idx)
 
         table = children.addTableCommandInput(
-            'tableP32Col{:02d}'.format(i), '', 5, '2:2:2:2:2')
+            'tableP32Col{:02d}'.format(i), '', 6, '2:2:2:2:2:2')
         table.hasGrid = False
 
         if nb_niches <= 1:
@@ -727,11 +736,20 @@ def rebuild_percage32_tables(children, count, existing_colonnes=None, inputs=Non
             sp_trous_etg = table.commandInputs.addIntegerSpinnerCommandInput(
                 'tableP32Col{:02d}TrousEtg{}'.format(i, row), '',
                 0, 21, 1, int(entry.get('trous_par_etagere', 0)))
+            # Nombre de lignes de percage systeme 32 sur le
+            # FOND (meme grille verticale que les colonnes) : 0
+            # = aucun percage, 1 = une ligne centree, 2+ =
+            # lignes reparties a egale distance des bords de la
+            # niche.
+            sp_percage_fond = table.commandInputs.addIntegerSpinnerCommandInput(
+                'tableP32Col{:02d}PercageFond{}'.format(i, row), '',
+                0, 10, 1, int(entry.get('percage_fond', 0)))
             table.addCommandInput(lbl, row, 0)
             table.addCommandInput(dd, row, 1)
             table.addCommandInput(sp_haut, row, 2)
             table.addCommandInput(sp_bas, row, 3)
             table.addCommandInput(sp_trous_etg, row, 4)
+            table.addCommandInput(sp_percage_fond, row, 5)
 
 
 def rebuild_portes_tables(children, count, existing_colonnes=None, inputs=None):
@@ -1676,6 +1694,7 @@ def _read_percage32_table_row(table, row):
     sp_haut = table.getInputAtPosition(row, 2)
     sp_bas = table.getInputAtPosition(row, 3)
     sp_trous_etg = table.getInputAtPosition(row, 4)
+    sp_percage_fond = table.getInputAtPosition(row, 5)
     systeme = 'off'
     if dd and dd.selectedItem:
         systeme = {'Off': 'off', '32': '32', '64': '64'}.get(dd.selectedItem.name, 'off')
@@ -1684,6 +1703,7 @@ def _read_percage32_table_row(table, row):
         'masquer_haut': int(sp_haut.value) if sp_haut else 0,
         'masquer_bas': int(sp_bas.value) if sp_bas else 0,
         'trous_par_etagere': int(sp_trous_etg.value) if sp_trous_etg else 0,
+        'percage_fond': int(sp_percage_fond.value) if sp_percage_fond else 0,
     }
 
 
@@ -1807,10 +1827,13 @@ def refresh_computed_fields(inputs):
         if need_rebuild_ef:
             existing_ef = read_etageres_fixes_colonnes_from_ui(
                 inputs, count_etageres_fixe_colonne_fields(inputs))
-            _chk_socle2 = inputs.itemById('checkSocleActif')
+            _dd_socle2 = inputs.itemById('dropdownSoclePlinthe')
+            _socle_actif2 = bool(
+                _dd_socle2 and _dd_socle2.selectedItem
+                and _dd_socle2.selectedItem.name == 'Socle')
             _champ_socle2 = inputs.itemById('champSocle')
             _socle_mm2 = (cm_to_mm(_champ_socle2.value)
-                          if (_champ_socle2 and _chk_socle2 and _chk_socle2.value) else 0)
+                          if (_champ_socle2 and _socle_actif2) else 0)
             rebuild_etageres_fixe_colonne_groups(
                 group_ef.children, int_m.value + 1, existing_ef,
                 hauteur_mm_max=get_hauteur_mm(inputs) - _socle_mm2,
@@ -2048,13 +2071,16 @@ def update_petite_diagonale(inputs):
     if not (txt_face and txt_cote and txt_plafond and champ_h and champ_l and champ_p):
         return
     champ_socle = inputs.itemById('champSocle')
-    chk_socle = inputs.itemById('checkSocleActif')
+    dd_socle_diag = inputs.itemById('dropdownSoclePlinthe')
+    _socle_actif_diag = bool(
+        dd_socle_diag and dd_socle_diag.selectedItem
+        and dd_socle_diag.selectedItem.name == 'Socle')
     h_mm = champ_h.value * 10.0
     l_mm = champ_l.value * 10.0
     p_mm = champ_p.value * 10.0
     socle_mm = (
         champ_socle.value * 10.0
-        if champ_socle and chk_socle and chk_socle.value else 0.0)
+        if champ_socle and _socle_actif_diag else 0.0)
     h_total_mm = h_mm + socle_mm
     diag_face_mm = math.sqrt(h_total_mm ** 2 + l_mm ** 2)
     diag_cote_mm = math.sqrt(h_total_mm ** 2 + p_mm ** 2)
@@ -2201,15 +2227,34 @@ def add_meuble_fields(inputs, cur_mm_func):
             _champ_retrait_fond.isEnabled = False
         dd_rainure_feuillure.isEnabled = False
 
-    group_socle = tc.addGroupCommandInput('groupSocle', 'Socle')
+    group_socle = tc.addGroupCommandInput('groupSocle', 'Socle/Plinthe')
     group_socle.isExpanded = True
     gs = group_socle.children
-    gs.addBoolValueInput('checkSocleActif', 'Activer Socle', True, '',
-                          bool(cur_mm_func('socle_actif', True)))
-    add_value_field(gs, 'champSocle', 'Hauteur socle',
+    _socle_actif_ui = bool(cur_mm_func('socle_actif', True))
+    _plinthe_actif_ui = bool(cur_mm_func('plinthe_actif', False))
+    if _socle_actif_ui:
+        _mode_socle_plinthe_actuel = 'Socle'
+    elif _plinthe_actif_ui:
+        _mode_socle_plinthe_actuel = 'Plinthe'
+    else:
+        _mode_socle_plinthe_actuel = 'Aucun'
+    dd_socle_plinthe = gs.addDropDownCommandInput(
+        'dropdownSoclePlinthe', 'Base',
+        adsk.core.DropDownStyles.TextListDropDownStyle)
+    dd_socle_plinthe.listItems.add(
+        'Aucun', _mode_socle_plinthe_actuel == 'Aucun')
+    dd_socle_plinthe.listItems.add(
+        'Socle', _mode_socle_plinthe_actuel == 'Socle')
+    dd_socle_plinthe.listItems.add(
+        'Plinthe', _mode_socle_plinthe_actuel == 'Plinthe')
+    add_value_field(gs, 'champSocle', 'Hauteur',
                      mm_to_cm(cur_mm_func('socle', 20)), 0, 300)
-    add_value_field(gs, 'champRetraitPlinthe', 'Retrait plinthe',
+    add_value_field(gs, 'champRetraitPlinthe', 'Retrait',
                      mm_to_cm(cur_mm_func('retrait_plinthe', 5)), 0, 500)
+    add_value_field(gs, 'champHauteurPlintheSeule', 'Hauteur',
+                     mm_to_cm(cur_mm_func('hauteur_plinthe', 20)), 0, 300)
+    add_value_field(gs, 'champRetraitPlintheSeule', 'Retrait',
+                     mm_to_cm(cur_mm_func('retrait_plinthe_seule', 5)), 0, 500)
     _pose_socle_actuel = cur_mm_func('pose_plinthe', 'encastre')
     dd_pose_socle = gs.addDropDownCommandInput(
         'dropdownPoseSocle', 'Type de pose',
@@ -2907,10 +2952,16 @@ def collect_values_mm(inputs):
         if dd_rainure_feuillure_c and dd_rainure_feuillure_c.selectedItem
         and dd_rainure_feuillure_c.selectedItem.name == 'Feuillure'
         else 'rainure')
-    chk_socle = inputs.itemById('checkSocleActif')
-    values['socle_actif'] = chk_socle.value if chk_socle else True
+    dd_socle_plinthe_c = inputs.itemById('dropdownSoclePlinthe')
+    _mode_sp_c = (
+        dd_socle_plinthe_c.selectedItem.name
+        if dd_socle_plinthe_c and dd_socle_plinthe_c.selectedItem else 'Socle')
+    values['socle_actif'] = _mode_sp_c == 'Socle'
+    values['plinthe_actif'] = _mode_sp_c == 'Plinthe'
     values['socle'] = val_mm('champSocle', 20)
     values['retrait_plinthe'] = val_mm('champRetraitPlinthe', 5)
+    values['hauteur_plinthe'] = val_mm('champHauteurPlintheSeule', 20)
+    values['retrait_plinthe_seule'] = val_mm('champRetraitPlintheSeule', 5)
     dd_pose_socle = inputs.itemById('dropdownPoseSocle')
     values['pose_plinthe'] = (
         'applique'
@@ -3097,24 +3148,31 @@ def update_field_visibility(inputs):
     # Le tableau Etageres mobile n'a plus besoin de logique de
     # visibilite conditionnelle : toutes les cellules restent visibles.
 
-    chk_socle = inputs.itemById('checkSocleActif')
+    dd_socle_plinthe_v = inputs.itemById('dropdownSoclePlinthe')
     champ_socle = inputs.itemById('champSocle')
     champ_retrait_plinthe = inputs.itemById('champRetraitPlinthe')
+    champ_hauteur_plinthe_seule = inputs.itemById('champHauteurPlintheSeule')
+    champ_retrait_plinthe_seule = inputs.itemById('champRetraitPlintheSeule')
     chk_onglet = inputs.itemById('checkCoupeOnglet')
+    _mode_sp_v = (
+        dd_socle_plinthe_v.selectedItem.name
+        if dd_socle_plinthe_v and dd_socle_plinthe_v.selectedItem else 'Aucun')
     # Le socle n'est pas compatible avec la coupe d'onglet (voir
-    # compute_layout) : desactive et decoche automatiquement la case
-    # Socle des que Coupe d'onglet est cochee.
-    if chk_onglet and chk_onglet.value and chk_socle:
-        if chk_socle.value:
-            chk_socle.value = False
-        chk_socle.isEnabled = False
-    elif chk_socle:
-        chk_socle.isEnabled = True
-    if chk_socle:
-        if champ_socle:
-            champ_socle.isVisible = chk_socle.value
-        if champ_retrait_plinthe:
-            champ_retrait_plinthe.isVisible = chk_socle.value
+    # compute_layout) : si Coupe d'onglet est cochee alors que
+    # 'Socle' est selectionne, repasse automatiquement sur
+    # 'Aucun' (la Plinthe seule, elle, reste compatible).
+    if chk_onglet and chk_onglet.value and dd_socle_plinthe_v and _mode_sp_v == 'Socle':
+        for _item_sp_v in dd_socle_plinthe_v.listItems:
+            _item_sp_v.isSelected = (_item_sp_v.name == 'Aucun')
+        _mode_sp_v = 'Aucun'
+    if champ_socle:
+        champ_socle.isVisible = _mode_sp_v == 'Socle'
+    if champ_retrait_plinthe:
+        champ_retrait_plinthe.isVisible = _mode_sp_v == 'Socle'
+    if champ_hauteur_plinthe_seule:
+        champ_hauteur_plinthe_seule.isVisible = _mode_sp_v == 'Plinthe'
+    if champ_retrait_plinthe_seule:
+        champ_retrait_plinthe_seule.isVisible = _mode_sp_v == 'Plinthe'
 
     # Retrait et Rainure/Feuillure du Fond n'ont de sens qu'en
     # mode Encastre : desactives (grises) en 'En applique'.
@@ -3528,10 +3586,10 @@ class CreateInputChangedHandler(adsk.core.InputChangedEventHandler):
             elif args.input.id == 'buttonAppliquer':
                 apply_button_clicked(args)
             elif args.input.id in (
-                    'checkSocleActif', 'checkCharniereAuto', 'checkCoupeOnglet',
+                    'dropdownSoclePlinthe', 'checkCharniereAuto', 'checkCoupeOnglet',
                     'dropdownPoseFond'):
                 update_field_visibility(full_inputs)
-                if args.input.id == 'checkSocleActif':
+                if args.input.id == 'dropdownSoclePlinthe':
                     update_petite_diagonale(full_inputs)
             elif args.input.id in (
                     'champHauteur', 'champLargeur', 'champProfondeur', 'champSocle'):
