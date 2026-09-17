@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '2.45'
+ADDIN_VERSION = '2.48'
 
 
 app = None
@@ -2248,7 +2248,7 @@ def add_meuble_fields(inputs, cur_mm_func):
     dd_socle_plinthe.listItems.add(
         'Plinthe', _mode_socle_plinthe_actuel == 'Plinthe')
     add_value_field(gs, 'champSocle', 'Hauteur',
-                     mm_to_cm(cur_mm_func('socle', 20)), 0, 300)
+                     mm_to_cm(cur_mm_func('socle', 20)), 0, 600)
     add_value_field(gs, 'champRetraitPlinthe', 'Retrait',
                      mm_to_cm(cur_mm_func('retrait_plinthe', 5)), 0, 500)
     add_value_field(gs, 'champHauteurPlintheSeule', 'Hauteur',

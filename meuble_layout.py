@@ -945,14 +945,28 @@ def compute_layout(values):
     # lui-meme de l'epaisseur de la plus grande facade en
     # applique presente (porte ou tiroir). Sans aucune facade
     # en applique, P n'est pas modifie (deja hors tout).
+    def _entrees_a_plat(colonnes):
+        # Chaque entree de values['portes_colonnes']/
+        # ['tiroirs_colonnes'] est soit un dict direct (colonne
+        # sans niches internes), soit une LISTE de dicts (une
+        # par niche de la colonne, quand des etageres fixes
+        # subdivisent la colonne) : on aplatit les 2 formats en
+        # une simple liste de dicts pour l'iteration.
+        plat = []
+        for c in (colonnes or []):
+            if isinstance(c, list):
+                plat.extend(e for e in c if isinstance(e, dict))
+            elif isinstance(c, dict):
+                plat.append(c)
+        return plat
     _portes_mode_ht = values.get('portes_mode', 'applique')
     _a_porte_applique_ht = _portes_mode_ht == 'applique' and any(
-        (c or {}).get('choix', 'off') != 'off'
-        for c in (values.get('portes_colonnes') or []))
+        e.get('choix', 'off') != 'off'
+        for e in _entrees_a_plat(values.get('portes_colonnes')))
     _tiroirs_mode_ht = values.get('tiroirs_mode', 'applique')
     _a_tiroir_applique_ht = _tiroirs_mode_ht == 'applique' and any(
-        (c or {}).get('nb_tiroirs', 0) > 0
-        for c in (values.get('tiroirs_colonnes') or []))
+        e.get('nb_tiroirs', 0) > 0
+        for e in _entrees_a_plat(values.get('tiroirs_colonnes')))
     _ep_facade_applique = 0.0
     if _a_porte_applique_ht:
         _ep_facade_applique = max(
