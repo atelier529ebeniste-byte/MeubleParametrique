@@ -155,6 +155,13 @@ def normalize_percage32_colonne(entry, legacy_actif=True, legacy_64=False,
             'masquer_haut': max(0, int(entry.get('masquer_haut', 0) or 0)),
             'trous_par_etagere': trous_par_etagere,
             'percage_fond': max(0, int(entry.get('percage_fond', 0) or 0)),
+            'plages_exclusion': [
+                {'de_mm': max(0, int(p.get('de_mm', 0) or 0)),
+                 'a_mm': max(0, int(p.get('a_mm', 0) or 0))}
+                for p in (entry.get('plages_exclusion') or [])
+                if isinstance(p, dict)
+                and int(p.get('a_mm', 0) or 0) > int(p.get('de_mm', 0) or 0)
+            ],
         }
     # Ancien format : bool (colonne active/inactive au sein d'un système 32/64
     # unique et global) ; le masquage était lui aussi un réglage global.
@@ -1360,6 +1367,7 @@ def compute_layout(values):
     niches_bounds_par_colonne = []
     percage32_niches_par_colonne = []
     p32_niches_candidates = []
+    p32_niches_brut_par_colonne = []
     p32_colonnes_candidates = []
     grilles_p32_par_colonne = []
     # Positions ajoutees UNIQUEMENT pour une charniere (voir section
@@ -1382,10 +1390,29 @@ def compute_layout(values):
             interior_z0 + marge_bas_p32, interior_z1 - marge_haut_p32)
         grilles_p32_par_colonne.append(_grille_col)
         _cand_par_niche = []
-        for (_nz0, _nz1), _niche in zip(_nbounds, _p32_niches):
-            _cand_niche = _candidats_percage32_niche(
+        _cand_brut_par_niche = []
+        for _niche_i, ((_nz0, _nz1), _niche) in enumerate(zip(_nbounds, _p32_niches)):
+            _cand_niche_brut = _candidats_percage32_niche(
                 _grille_col, _niche['systeme'], _niche['masquer_bas'], _niche['masquer_haut'],
                 _nz0, _nz1)
+            # Appliquer les plages d'exclusion Z (reference
+            # depuis le BAS de la niche, en mm). Un trou est
+            # exclu si sa position Z absolue appartient a au
+            # moins une plage [de_mm, a_mm].
+            _plages_excl = _niche.get('plages_exclusion') or []
+            if _plages_excl:
+                _cand_niche = []
+                for _z_abs in _cand_niche_brut:
+                    # Position depuis le bas de la niche (cm->mm)
+                    _z_niche_mm = (_z_abs - _nz0) * 10.0
+                    _exclu = any(
+                        p['de_mm'] <= _z_niche_mm <= p['a_mm']
+                        for p in _plages_excl)
+                    if not _exclu:
+                        _cand_niche.append(_z_abs)
+            else:
+                _cand_niche = _cand_niche_brut
+            _cand_brut_par_niche.append(list(_cand_niche_brut))
             _cand_par_niche.append(_cand_niche)
             # Percage systeme 32 sur le FOND : memes Z que la
             # grille de cette niche (candidats deja filtres
@@ -1413,6 +1440,7 @@ def compute_layout(values):
                             _diam_p32_fond, _depth_p32_fond,
                             'Percage fond Colonne {:02d} Ligne {:02d}'.format(
                                 _bay_i + 1, _xi + 1)))
+        p32_niches_brut_par_colonne.append(_cand_brut_par_niche)
         p32_niches_candidates.append(_cand_par_niche)
         p32_colonnes_candidates.append([z for _nc in _cand_par_niche for z in _nc])
 
@@ -1579,14 +1607,45 @@ def compute_layout(values):
                 # (elle finirait forcement a l'interieur d'un tiroir).
                 continue
             niche_candidates = p32_niches_candidates[bay_i][niche_i]
-            z_starts = compute_etagere_z_starts(
-                nb_etageres_niche, col_etageres['mode'], nz0, nz1 - nz0,
-                Ep_etagere_mobile, niche_candidates)
+            # Positions initiales sur la grille BRUTE (avant plages) :
+            # les etageres gardent leur place equidistante naturelle.
+            _cands_brut_niche = (
+                p32_niches_brut_par_colonne[bay_i][niche_i]
+                if bay_i < len(p32_niches_brut_par_colonne)
+                and niche_i < len(p32_niches_brut_par_colonne[bay_i])
+                else niche_candidates)
+            if _cands_brut_niche:
+                z_starts = list(compute_etagere_z_starts(
+                    nb_etageres_niche, col_etageres['mode'], nz0, nz1 - nz0,
+                    Ep_etagere_mobile, _cands_brut_niche))
+            _plages_etg = p32_niches[niche_i].get('plages_exclusion') or []
+            if _plages_etg:
+                # Supprimer les etageres dont TOUS les trous
+                # naturels (grille brute, dans leur demi-zone)
+                # sont exclus par les plages. Si au moins un
+                # trou brut survive, l'etagere est conservee
+                # a sa position originale.
+                _pitch32_etg = mm_to_cm(PERCAGE32_PITCH_MM)
+                _nb_cfg_etg = int(p32_niches[niche_i].get('trous_par_etagere', 0) or 0)
+                _demi_etg = max(_nb_cfg_etg // 2, 1) * _pitch32_etg
+                _cands_filtres_set = set(round(_c, 4) for _c in niche_candidates)
+                _z_ok = []
+                for _zz in z_starts:
+                    _centre = _zz + Ep_etagere_mobile / 2.0
+                    # Trous bruts dans la demi-zone
+                    _trous_bruts_proches = [
+                        _c for _c in _cands_brut_niche
+                        if abs(_c - _centre) <= _demi_etg]
+                    # Si au moins un survit au filtrage -> garder
+                    if any(round(_t, 4) in _cands_filtres_set
+                           for _t in _trous_bruts_proches):
+                        _z_ok.append(_zz)
+                z_starts = _z_ok
             etageres_z_par_colonne[bay_i][niche_i] = list(z_starts)
             porte_encastree_ici = (portes_mode == 'encastre'
                                    and po_niches[niche_i].get('choix', 'off') != 'off')
             retrait_niche = (retrait + ep_porte) if porte_encastree_ici else retrait
-            for i in range(1, nb_etageres_niche + 1):
+            for i in range(1, len(z_starts) + 1):
                 z_start = z_starts[i - 1]
                 j = bay_i + 1
                 parts = []

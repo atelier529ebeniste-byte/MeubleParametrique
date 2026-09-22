@@ -11,7 +11,7 @@ import traceback
 # Numero de version affiche dans le dialogue (sous le logo, et dans
 # le bloc Mise a jour). Format N.NN. A incrementer manuellement a
 # chaque publication sur Drive/GitHub.
-ADDIN_VERSION = '2.48'
+ADDIN_VERSION = '2.59'
 
 
 app = None
@@ -750,6 +750,40 @@ def rebuild_percage32_tables(children, count, existing_colonnes=None, inputs=Non
             table.addCommandInput(sp_bas, row, 3)
             table.addCommandInput(sp_trous_etg, row, 4)
             table.addCommandInput(sp_percage_fond, row, 5)
+            # Spinner NbPlages + MAX_PLAGES lignes toujours creees,
+            # visibilite controlee par le spinner (isVisible sur
+            # les controles hors tableau). Pattern safe : tout est
+            # cree a l'init, on change uniquement .isVisible et
+            # .value depuis inputChanged.
+            _MAX_PLAGES = 5
+            _plages_niche = [
+                p for p in (entry.get('plages_exclusion') or [])
+                if isinstance(p, dict)]
+            _sp_nb_id = 'tableP32Col{:02d}NbPlages{:02d}'.format(i, row)
+            # Lire depuis children (nouveau groupe) plutot que
+            # inputs (peut contenir des references fantomes de
+            # l'ancien groupe apres delete_children_by_prefix).
+            _sp_nb_in_children = children.itemById(_sp_nb_id)
+            if _sp_nb_in_children is not None:
+                _nb_plages_val = min(int(_sp_nb_in_children.value), _MAX_PLAGES)
+            else:
+                _nb_plages_val = min(len(_plages_niche), _MAX_PLAGES)
+            sp_nb_plages = children.addIntegerSpinnerCommandInput(
+                _sp_nb_id, 'Plages excl. (nb)',
+                0, _MAX_PLAGES, 1, _nb_plages_val)
+            # Creer MAX_PLAGES lignes De/A toujours presentes,
+            # visibles seulement si leur index < _nb_plages_val.
+            for _pi in range(_MAX_PLAGES):
+                _p_data = _plages_niche[_pi] if _pi < len(_plages_niche) else {}
+                _visible = _pi < _nb_plages_val
+                _sp_de = children.addIntegerSpinnerCommandInput(
+                    'tableP32Col{:02d}Plages{:02d}de{:02d}'.format(i, row, _pi),
+                    'De (mm)', 0, 9999, 1, int(_p_data.get('de_mm', 0)))
+                _sp_de.isVisible = _visible
+                _sp_a = children.addIntegerSpinnerCommandInput(
+                    'tableP32Col{:02d}Plages{:02d}a{:02d}'.format(i, row, _pi),
+                    'A (mm)', 0, 9999, 1, int(_p_data.get('a_mm', 0)))
+                _sp_a.isVisible = _visible
 
 
 def rebuild_portes_tables(children, count, existing_colonnes=None, inputs=None):
@@ -1683,7 +1717,7 @@ def read_etageres_fixes_colonnes_from_ui(inputs, count):
     return result
 
 
-def _read_percage32_table_row(table, row):
+def _read_percage32_table_row(table, row, inputs=None, col_i=1):
     # Lit les 4 valeurs (Systeme/Masquer haut/bas/Trous par etagere)
     # de la ligne 'row' du tableau Percage 32 (colonnes 1/2/3/4, la
     # colonne 0 est le repere en lecture seule). Renvoie None si la
@@ -1698,12 +1732,29 @@ def _read_percage32_table_row(table, row):
     systeme = 'off'
     if dd and dd.selectedItem:
         systeme = {'Off': 'off', '32': '32', '64': '64'}.get(dd.selectedItem.name, 'off')
+    # Lecture des plages d'exclusion depuis les controles directs
+    # (De/A crees dans children du groupe, pas dans un tableau).
+    _plages = []
+    if inputs:
+        for _pi_r in range(5):
+            _sd_r = inputs.itemById(
+                'tableP32Col{:02d}Plages{:02d}de{:02d}'.format(col_i, row, _pi_r))
+            _sa_r = inputs.itemById(
+                'tableP32Col{:02d}Plages{:02d}a{:02d}'.format(col_i, row, _pi_r))
+            if _sd_r is None:
+                break
+            if getattr(_sd_r, 'isVisible', True):
+                _plages.append({
+                    'de_mm': int(_sd_r.value),
+                    'a_mm': int(_sa_r.value) if _sa_r else 0,
+                })
     return {
         'systeme': systeme,
         'masquer_haut': int(sp_haut.value) if sp_haut else 0,
         'masquer_bas': int(sp_bas.value) if sp_bas else 0,
         'trous_par_etagere': int(sp_trous_etg.value) if sp_trous_etg else 0,
         'percage_fond': int(sp_percage_fond.value) if sp_percage_fond else 0,
+        'plages_exclusion': _plages,
     }
 
 
@@ -1719,12 +1770,12 @@ def read_percage32_tables(children, count, inputs=None):
             continue
         nb_niches = get_nb_niches_colonne(inputs, i) if inputs is not None else 1
         if nb_niches <= 1:
-            entry = _read_percage32_table_row(table, 0)
+            entry = _read_percage32_table_row(table, 0, inputs=inputs, col_i=i)
             result.append(entry if entry is not None else {'systeme': '32', 'masquer_bas': 0, 'masquer_haut': 0})
         else:
             niches = []
             for k in range(nb_niches):
-                entry = _read_percage32_table_row(table, k)
+                entry = _read_percage32_table_row(table, k, inputs=inputs, col_i=i)
                 niches.append(entry if entry is not None else {'systeme': '32', 'masquer_bas': 0, 'masquer_haut': 0})
             result.append(niches)
     return result
@@ -3597,6 +3648,27 @@ class CreateInputChangedHandler(adsk.core.InputChangedEventHandler):
             elif (args.input.id.startswith('dropdownPercage32Colonne')
                   and args.input.id.endswith('Systeme')):
                 update_field_visibility(full_inputs)
+            elif args.input.id.startswith('tableP32Col') and 'NbPlages' in args.input.id:
+                # Spinner NbPlages change : basculer isVisible sur
+                # les controles De/A deja crees (pas de creation
+                # dynamique -- interdit dans inputChanged).
+                import re as _re_p
+                _m_p = _re_p.match(
+                    r'tableP32Col(\d+)NbPlages(\d+)', args.input.id)
+                if _m_p:
+                    _ci_p = int(_m_p.group(1))
+                    _row_p = int(_m_p.group(2))
+                    _nb_p = int(args.input.value)
+                    for _pi_v in range(5):
+                        _vis = _pi_v < _nb_p
+                        _sd_v = full_inputs.itemById(
+                            'tableP32Col{:02d}Plages{:02d}de{:02d}'.format(
+                                _ci_p, _row_p, _pi_v))
+                        _sa_v = full_inputs.itemById(
+                            'tableP32Col{:02d}Plages{:02d}a{:02d}'.format(
+                                _ci_p, _row_p, _pi_v))
+                        if _sd_v: _sd_v.isVisible = _vis
+                        if _sa_v: _sa_v.isVisible = _vis
             elif (args.input.id.startswith('tablePortesCol')
                   and 'Choix' in args.input.id):
                 update_field_visibility(full_inputs)
